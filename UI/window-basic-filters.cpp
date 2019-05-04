@@ -71,6 +71,7 @@ OBSBasicFilters::OBSBasicFilters(QWidget *parent, OBSSource source_)
 
 	const char *name = obs_source_get_name(source);
 	setWindowTitle(QTStr("Basic.Filters.Title").arg(QT_UTF8(name)));
+	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
 #ifndef QT_NO_SHORTCUT
 	ui->actionRemoveFilter->setShortcut(QApplication::translate("OBSBasicFilters", "Del", nullptr));
@@ -433,7 +434,7 @@ void OBSBasicFilters::AddNewFilter(const char *id)
 			return;
 
 		if (name.empty()) {
-			OBSMessageBox::information(this,
+			OBSMessageBox::warning(this,
 					QTStr("NoNameEntered.Title"),
 					QTStr("NoNameEntered.Text"));
 			AddNewFilter(id);
@@ -443,7 +444,7 @@ void OBSBasicFilters::AddNewFilter(const char *id)
 		existing_filter = obs_source_get_filter_by_name(source,
 				name.c_str());
 		if (existing_filter) {
-			OBSMessageBox::information(this,
+			OBSMessageBox::warning(this,
 					QTStr("NameExists.Title"),
 					QTStr("NameExists.Text"));
 			obs_source_release(existing_filter);

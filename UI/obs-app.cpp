@@ -54,6 +54,8 @@
 
 #include <iostream>
 
+#include "ui-config.h"
+
 using namespace std;
 
 static log_handler_t def_log_handler;
@@ -418,10 +420,12 @@ bool OBSApp::InitGlobalConfigDefaults()
 			"ShowListboxToolbars", true);
 	config_set_default_bool(globalConfig, "BasicWindow",
 			"ShowStatusBar", true);
+	config_set_default_bool(globalConfig, "BasicWindow",
+			"StudioModeLabels", true);
 
 	if (!config_get_bool(globalConfig, "General", "Pre21Defaults")) {
 		config_set_default_string(globalConfig, "General",
-				"CurrentTheme", "Dark");
+				"CurrentTheme", DEFAULT_THEME);
 	}
 
 	config_set_default_bool(globalConfig, "BasicWindow",
@@ -707,6 +711,17 @@ bool OBSApp::InitGlobalConfig()
 		    lastVersion < MAKE_SEMANTIC_VERSION(21, 0, 0);
 
 		config_set_bool(globalConfig, "General", "Pre21Defaults",
+				useOldDefaults);
+		changed = true;
+	}
+
+	if (!config_has_user_value(globalConfig, "General", "Pre23Defaults")) {
+		uint32_t lastVersion = config_get_int(globalConfig, "General",
+				"LastVersion");
+		bool useOldDefaults = lastVersion &&
+		    lastVersion < MAKE_SEMANTIC_VERSION(23, 0, 0);
+
+		config_set_bool(globalConfig, "General", "Pre23Defaults",
 				useOldDefaults);
 		changed = true;
 	}
@@ -1013,18 +1028,21 @@ bool OBSApp::InitTheme()
 
 	const char *themeName = config_get_string(globalConfig, "General",
 			"CurrentTheme");
+
 	if (!themeName) {
 		/* Use deprecated "Theme" value if available */
 		themeName = config_get_string(globalConfig,
 				"General", "Theme");
 		if (!themeName)
-			themeName = "Default";
+			themeName = DEFAULT_THEME;
+		if (!themeName)
+			themeName = "Dark";
 	}
 
-	if (strcmp(themeName, "Default") != 0 && SetTheme(themeName))
-		return true;
+	if (strcmp(themeName, "Default") == 0)
+		themeName = "System";
 
-	return SetTheme("Default");
+	return SetTheme(themeName);
 }
 
 OBSApp::OBSApp(int &argc, char **argv, profiler_name_store_t *store)
@@ -1032,6 +1050,8 @@ OBSApp::OBSApp(int &argc, char **argv, profiler_name_store_t *store)
 	  profilerNameStore(store)
 {
 	sleepInhibitor = os_inhibit_sleep_create("OBS Video/audio");
+
+	setWindowIcon(QIcon::fromTheme("obs", QIcon(":/res/images/obs.png")));
 }
 
 OBSApp::~OBSApp()
@@ -1161,6 +1181,20 @@ void OBSApp::AppInit()
 	config_set_default_string(globalConfig, "Basic", "SceneCollectionFile",
 			Str("Untitled"));
 
+	if (!config_has_user_value(globalConfig, "Basic", "Profile")) {
+		config_set_string(globalConfig, "Basic", "Profile",
+				Str("Untitled"));
+		config_set_string(globalConfig, "Basic", "ProfileDir",
+				Str("Untitled"));
+	}
+
+	if (!config_has_user_value(globalConfig, "Basic", "SceneCollection")) {
+		config_set_string(globalConfig, "Basic",
+				"SceneCollection", Str("Untitled"));
+		config_set_string(globalConfig, "Basic",
+				"SceneCollectionFile", Str("Untitled"));
+	}
+
 #ifdef _WIN32
 	bool disableAudioDucking = config_get_bool(globalConfig, "Audio",
 			"DisableAudioDucking");
@@ -1214,11 +1248,20 @@ void OBSApp::EnableInFocusHotkeys(bool enable)
 	ResetHotkeyState(applicationState() != Qt::ApplicationActive);
 }
 
+Q_DECLARE_METATYPE(VoidFunc)
+
+void OBSApp::Exec(VoidFunc func)
+{
+	func();
+}
+
 bool OBSApp::OBSInit()
 {
 	ProfileScope("OBSApp::OBSInit");
 
 	setAttribute(Qt::AA_UseHighDpiPixmaps);
+
+	qRegisterMetaType<VoidFunc>();
 
 	if (!StartupOBS(locale.c_str(), GetProfilerNameStore()))
 		return false;
@@ -1231,6 +1274,8 @@ bool OBSApp::OBSInit()
 	obs_data_set_bool(settings, "BrowserHWAccel", browserHWAccel);
 	obs_apply_private_data(settings);
 	obs_data_release(settings);
+
+	blog(LOG_INFO, "Current Date/Time: %s", CurrentDateTimeString().c_str());
 
 	blog(LOG_INFO, "Browser Hardware Acceleration: %s",
 			browserHWAccel ? "true" : "false");
@@ -1645,6 +1690,10 @@ static int run_program(fstream &logFile, int argc, char *argv[])
 	profile_register_root(run_program_init, 0);
 
 	ScopeProfiler prof{run_program_init};
+
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 11, 0))
+	QGuiApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+#endif
 
 	QCoreApplication::addLibraryPath(".");
 
@@ -2177,10 +2226,25 @@ static void upgrade_settings(void)
 	os_closedir(dir);
 }
 
+void ctrlc_handler (int s) {
+	UNUSED_PARAMETER(s);
+
+	OBSBasic *main = reinterpret_cast<OBSBasic*>(App()->GetMainWindow());
+	main->close();
+}
+
 int main(int argc, char *argv[])
 {
 #ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);
+
+	struct sigaction sig_handler;
+
+	sig_handler.sa_handler = ctrlc_handler;
+	sigemptyset(&sig_handler.sa_mask);
+	sig_handler.sa_flags = 0;
+
+	sigaction(SIGINT, &sig_handler, NULL);
 #endif
 
 #ifdef _WIN32

@@ -20,6 +20,10 @@ static T GetOBSRef(QListWidgetItem *item)
 void EnumProfiles(function<bool (const char *, const char *)> &&cb);
 void EnumSceneCollections(function<bool (const char *, const char *)> &&cb);
 
+extern volatile bool streaming_active;
+extern volatile bool recording_active;
+extern volatile bool replaybuf_active;
+
 /* ------------------------------------------------------------------------- */
 
 template<typename T> struct OBSStudioCallback {
@@ -61,6 +65,11 @@ struct OBSStudioAPI : obs_frontend_callbacks {
 	void *obs_frontend_get_main_window_handle(void) override
 	{
 		return (void*)main->winId();
+	}
+
+	void *obs_frontend_get_system_tray(void) override
+	{
+		return (void*)main->trayIcon.data();
 	}
 
 	void obs_frontend_get_scenes(
@@ -232,7 +241,7 @@ struct OBSStudioAPI : obs_frontend_callbacks {
 
 	bool obs_frontend_streaming_active(void) override
 	{
-		return main->outputHandler->StreamingActive();
+		return os_atomic_load_bool(&streaming_active);
 	}
 
 	void obs_frontend_recording_start(void) override
@@ -247,7 +256,7 @@ struct OBSStudioAPI : obs_frontend_callbacks {
 
 	bool obs_frontend_recording_active(void) override
 	{
-		return main->outputHandler->RecordingActive();
+		return os_atomic_load_bool(&recording_active);
 	}
 
 	void obs_frontend_replay_buffer_start(void) override
@@ -267,7 +276,7 @@ struct OBSStudioAPI : obs_frontend_callbacks {
 
 	bool obs_frontend_replay_buffer_active(void) override
 	{
-		return main->outputHandler->ReplayBufferActive();
+		return os_atomic_load_bool(&replaybuf_active);
 	}
 
 	void *obs_frontend_add_tools_menu_qaction(const char *name) override

@@ -144,6 +144,7 @@ private:
 	qreal inputPeakHoldDuration;
 
 	uint64_t lastRedrawTime = 0;
+	int channels = 0;
 	bool clipping = false;
 	bool vertical;
 
@@ -197,6 +198,8 @@ public:
 	qreal getInputPeakHoldDuration() const;
 	void setInputPeakHoldDuration(qreal v);
 	void setPeakMeterType(enum obs_peak_meter_type peakMeterType);
+	virtual void mousePressEvent(QMouseEvent *event) override;
+	virtual void wheelEvent(QWheelEvent *event) override;
 
 protected:
 	void paintEvent(QPaintEvent *event) override;

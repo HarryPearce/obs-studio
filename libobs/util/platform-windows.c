@@ -50,7 +50,7 @@ static inline uint32_t get_winver(void)
 	if (!winver) {
 		struct win_version_info ver;
 		get_win_ver(&ver);
-		winver = (ver.major << 16) | ver.minor;
+		winver = (ver.major << 8) | ver.minor;
 	}
 
 	return winver;
@@ -92,6 +92,12 @@ void *os_dlopen(const char *path)
 
 	if (!h_library) {
 		DWORD error = GetLastError();
+
+		/* don't print error for libraries that aren't meant to be
+		 * dynamically linked */
+		if (error == ERROR_PROC_NOT_FOUND)
+			return NULL;
+
 		char *message = NULL;
 
 		FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM |
@@ -287,6 +293,31 @@ int os_get_program_data_path(char *dst, size_t size, const char *name)
 char *os_get_program_data_path_ptr(const char *name)
 {
 	return os_get_path_ptr_internal(name, CSIDL_COMMON_APPDATA);
+}
+
+char *os_get_executable_path_ptr(const char *name)
+{
+	char *ptr;
+	char *slash;
+	wchar_t path_utf16[MAX_PATH];
+	struct dstr path;
+
+	GetModuleFileNameW(NULL, path_utf16, MAX_PATH);
+
+	os_wcs_to_utf8_ptr(path_utf16, 0, &ptr);
+	dstr_init_move_array(&path, ptr);
+	dstr_replace(&path, "\\", "/");
+	slash = strrchr(path.array, '/');
+	if (slash) {
+		size_t len = slash - path.array + 1;
+		dstr_resize(&path, len);
+	}
+
+	if (name && *name) {
+		dstr_cat(&path, name);
+	}
+
+	return path.array;
 }
 
 bool os_file_exists(const char *path)
@@ -867,6 +898,11 @@ void get_win_ver(struct win_version_info *info)
 	}
 
 	*info = ver;
+}
+
+uint32_t get_win_ver_int(void)
+{
+	return get_winver();
 }
 
 struct os_inhibit_info {

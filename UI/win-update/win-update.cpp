@@ -242,7 +242,7 @@ try {
 	return true;
 
 } catch (string text) {
-	blog(LOG_WARNING, "%s: %s", __FUNCTION__, text.c_str());
+	blog(LOG_DEBUG, "%s: %s", __FUNCTION__, text.c_str());
 	return false;
 }
 
@@ -586,7 +586,7 @@ try {
 
 	auto ActiveOrGameCaptureLocked = [this] ()
 	{
-		if (video_output_active(obs_get_video())) {
+		if (obs_video_active()) {
 			if (manualUpdate)
 				info(QTStr("Updater.Running.Title"),
 				     QTStr("Updater.Running.Text"));

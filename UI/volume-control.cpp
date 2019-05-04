@@ -2,11 +2,11 @@
 #include "qt-wrappers.hpp"
 #include "obs-app.hpp"
 #include "mute-checkbox.hpp"
+#include "slider-ignorewheel.hpp"
 #include "slider-absoluteset-style.hpp"
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QPushButton>
-#include <QSlider>
 #include <QLabel>
 #include <QPainter>
 #include <QStyleFactory>
@@ -123,6 +123,7 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 	nameLabel = new QLabel();
 	volLabel  = new QLabel();
 	mute      = new MuteCheckBox();
+
 	QString sourceName = obs_source_get_name(source);
 	setObjectName(sourceName);
 
@@ -153,7 +154,7 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 		QHBoxLayout *meterLayout  = new QHBoxLayout;
 
 		volMeter  = new VolumeMeter(nullptr, obs_volmeter, true);
-		slider    = new QSlider(Qt::Vertical);
+		slider    = new SliderIgnoreScroll(Qt::Vertical);
 
 		nameLayout->setAlignment(Qt::AlignCenter);
 		meterLayout->setAlignment(Qt::AlignCenter);
@@ -188,6 +189,8 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 		mainLayout->addItem(meterLayout);
 		mainLayout->addItem(controlLayout);
 
+		volMeter->setFocusProxy(slider);
+
 		setMaximumWidth(110);
 	} else {
 		QHBoxLayout *volLayout  = new QHBoxLayout;
@@ -195,7 +198,7 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 		QHBoxLayout *botLayout  = new QHBoxLayout;
 
 		volMeter  = new VolumeMeter(nullptr, obs_volmeter, false);
-		slider    = new QSlider(Qt::Horizontal);
+		slider    = new SliderIgnoreScroll(Qt::Horizontal);
 
 		textLayout->setContentsMargins(0, 0, 0, 0);
 		textLayout->addWidget(nameLabel);
@@ -217,6 +220,8 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 		mainLayout->addItem(textLayout);
 		mainLayout->addWidget(volMeter);
 		mainLayout->addItem(botLayout);
+
+		volMeter->setFocusProxy(slider);
 	}
 
 	setLayout(mainLayout);
@@ -227,6 +232,7 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 	nameLabel->setText(sourceName);
 	nameLabel->setFont(font);
 	volLabel->setFont(font);
+
 	slider->setMinimum(0);
 	slider->setMaximum(100);
 
@@ -498,6 +504,16 @@ void VolumeMeter::setPeakMeterType(enum obs_peak_meter_type peakMeterType)
 	}
 }
 
+void VolumeMeter::mousePressEvent(QMouseEvent *event)
+{
+	setFocus(Qt::MouseFocusReason);
+}
+
+void VolumeMeter::wheelEvent(QWheelEvent *event)
+{
+	QApplication::sendEvent(focusProxy(), event);
+}
+
 VolumeMeter::VolumeMeter(QWidget *parent, obs_volmeter_t *obs_volmeter,
 		bool vertical)
 		: QWidget(parent), obs_volmeter(obs_volmeter),
@@ -527,6 +543,8 @@ VolumeMeter::VolumeMeter(QWidget *parent, obs_volmeter_t *obs_volmeter,
 	magnitudeIntegrationTime = 0.3;                     //  99% in 300 ms
 	peakHoldDuration = 20.0;                            //  20 seconds
 	inputPeakHoldDuration = 1.0;                        //  1 second
+
+	channels = (int)audio_output_get_channels(obs_get_audio());
 
 	handleChannelCofigurationChange();
 	updateTimerRef = updateTimer.toStrongRef();
@@ -1007,16 +1025,22 @@ void VolumeMeter::paintEvent(QPaintEvent *event)
 
 	for (int channelNr = 0; channelNr < displayNrAudioChannels;
 		channelNr++) {
+
+		int channelNrFixed = (displayNrAudioChannels == 1 &&
+		                      channels > 2)
+			? 2
+			: channelNr;
+
 		if (vertical)
 			paintVMeter(painter, channelNr * 4, 8, 3, height - 10,
-					displayMagnitude[channelNr],
-					displayPeak[channelNr],
-					displayPeakHold[channelNr]);
+					displayMagnitude[channelNrFixed],
+					displayPeak[channelNrFixed],
+					displayPeakHold[channelNrFixed]);
 		else
 			paintHMeter(painter, 5, channelNr * 4, width - 5, 3,
-					displayMagnitude[channelNr],
-					displayPeak[channelNr],
-					displayPeakHold[channelNr]);
+					displayMagnitude[channelNrFixed],
+					displayPeak[channelNrFixed],
+					displayPeakHold[channelNrFixed]);
 
 		if (idle)
 			continue;
@@ -1026,10 +1050,10 @@ void VolumeMeter::paintEvent(QPaintEvent *event)
 		// having too much visual impact.
 		if (vertical)
 			paintInputMeter(painter, channelNr * 4, 3, 3, 3,
-					displayInputPeakHold[channelNr]);
+					displayInputPeakHold[channelNrFixed]);
 		else
 			paintInputMeter(painter, 0, channelNr * 4, 3, 3,
-					displayInputPeakHold[channelNr]);
+					displayInputPeakHold[channelNrFixed]);
 	}
 
 	lastRedrawTime = ts;

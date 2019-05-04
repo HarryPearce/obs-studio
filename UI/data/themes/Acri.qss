@@ -42,7 +42,6 @@ QWidget {
 	outline: none;
 	font-family: "Open Sans", "Tahoma", "Arial", sans-serif;
 	font-size: 12px;
-	padding: 4px;
 	overflow: auto;
 }
 
@@ -56,6 +55,7 @@ QLabel:link {
 
 QMenu {
 	border: 1px solid #333336;
+	padding: 4px;
 }
 
 * [frameShape="1"], * [frameShape="2"], * [frameShape="3"], * [frameShape="4"], * [frameShape="5"], * [frameShape="6"] {
@@ -156,7 +156,7 @@ QListWidget QLineEdit {
 
 /* Dock stuff */
 QDockWidget {
-	background: transparent;
+	background: #181819;
 	border: none;
 	font-size: 14px;
 	font-weight: bold;
@@ -260,6 +260,7 @@ QScrollBar:vertical {
 	width: 20px;
 	margin-top: -3px;
 	margin-bottom: -3px;
+	padding: 4px;
 }
 
 QScrollBar::handle:vertical {
@@ -273,6 +274,7 @@ QScrollBar::handle:vertical {
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 	border: none;
 	background: none;
+	height: 0;
 }
 
 QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical, QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
@@ -286,6 +288,7 @@ QScrollBar:horizontal {
 	height: 20px;
 	margin-left: -3px;
 	margin-right: -3px;
+	padding: 4px;
 }
 
 QScrollBar::handle:horizontal {
@@ -299,6 +302,7 @@ QScrollBar::handle:horizontal {
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 	border: none;
 	background: none;
+	width: 0;
 }
 
 QScrollBar::left-arrow:horizontal, QScrollBar::right-arrow:horizontal, QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
@@ -326,27 +330,27 @@ QToolButton:pressed {
 }
 
 * [themeID="addIconSmall"] {
-	qproperty-icon: url(./Acri/plus.png);
+	qproperty-icon: url(./Dark/plus.svg);
 }
 
 * [themeID="removeIconSmall"] {
-	qproperty-icon: url(./Acri/minus.png);
+	qproperty-icon: url(./Dark/minus.svg);
 }
 
 * [themeID="propertiesIconSmall"] {
-	qproperty-icon: url(./Acri/cogwheel.png);
+	qproperty-icon: url(./Dark/settings/general.svg);
 }
 
 * [themeID="configIconSmall"] {
-	qproperty-icon: url(./Acri/cogwheel.png);
+	qproperty-icon: url(./Dark/settings/general.svg);
 }
 
 * [themeID="upArrowIconSmall"] {
-	qproperty-icon: url(./Acri/up_arrow.png);
+	qproperty-icon: url(./Dark/up.svg);
 }
 
 * [themeID="downArrowIconSmall"] {
-	qproperty-icon: url(./Acri/down_arrow.png);
+	qproperty-icon: url(./Dark/down.svg);
 }
 
 /* Tab Widget */
@@ -405,7 +409,7 @@ QComboBox::drop-down {
 
 QComboBox::down-arrow {
 	qproperty-alignment: AlignTop;
-	image: url(./Acri/updown.png);
+	image: url(./Dark/updown.svg);
 	width: 100%;
 }
 
@@ -425,7 +429,7 @@ QComboBox::drop-down:editable {
 
 QComboBox::down-arrow:editable {
 	qproperty-alignment: AlignTop;
-	image: url(./Acri/down_arrow.png);
+	image: url(./Dark/down.svg);
 	width: 8%;
 }
 
@@ -434,6 +438,7 @@ QComboBox::down-arrow:editable {
 QLineEdit, QTextEdit, QPlainTextEdit {
 	background-color: rgb(8,8,11);
 	border: none;
+	padding: 4px;
 	padding-left: 2px;
 }
 
@@ -442,6 +447,7 @@ QLineEdit, QTextEdit, QPlainTextEdit {
 QSpinBox, QDoubleSpinBox {
 	background-color: rgb(8,8,11);
 	border: none;
+	padding: 4px;
 	padding-left: 2px;
 	padding-right: 15px;
 	margin-right: 10px;
@@ -489,12 +495,12 @@ QDoubleSpinBox::up-button:disabled, QDoubleSpinBox::up-button:off, QDoubleSpinBo
 }
 
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-	image: url(./Acri/up_arrow.png);
+	image: url(./Dark/up.svg);
 	width: 100%;
 }
 
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-	image: url(./Acri/down_arrow.png);
+	image: url(./Dark/down.svg);
 	width: 100%;
 }
 
@@ -672,6 +678,10 @@ QStatusBar::item {
 }
 
 /* Checkboxes */
+QCheckBox {
+	padding: 4px;
+}
+
 QCheckBox::indicator,
 QGroupBox::indicator {
 	width: 20px;
@@ -762,34 +772,34 @@ MuteCheckBox {
 }
 
 MuteCheckBox::indicator:checked {
-	image: url(./Dark/mute.png);
+	image: url(./Dark/mute.svg);
 }
 
 MuteCheckBox::indicator:unchecked {
-	image: url(./Dark/unmute.png);
+	image: url(./Dark/settings/audio.svg);
 }
 
 MuteCheckBox::indicator:unchecked:hover {
-	image: url(./Dark/unmute.png);
+	image: url(./Dark/settings/audio.svg);
 }
 
 MuteCheckBox::indicator:unchecked:focus {
-	image: url(./Dark/unmute.png);
+	image: url(./Dark/settings/audio.svg);
 }
 MuteCheckBox::indicator:checked:hover {
-	image: url(./Dark/mute.png);
+	image: url(./Dark/mute.svg);
 }
 
 MuteCheckBox::indicator:checked:focus {
-	image: url(./Dark/mute.png);
+	image: url(./Dark/mute.svg);
 }
 
 MuteCheckBox::indicator:checked:disabled {
-	image: url(./Dark/mute.png);
+	image: url(./Dark/mute.svg);
 }
 
 MuteCheckBox::indicator:unchecked:disabled {
-	image: url(./Dark/unmute.png);
+	image: url(./Dark/settings/audio.svg);
 }
 
 OBSHotkeyLabel[hotkeyPairHover=true] {
@@ -812,12 +822,12 @@ SourceTreeSubItemCheckBox::indicator {
 
 SourceTreeSubItemCheckBox::indicator:checked,
 SourceTreeSubItemCheckBox::indicator:checked:hover {
-    image: url(./Dark/expand.png);
+    image: url(./Dark/expand.svg);
 }
 
 SourceTreeSubItemCheckBox::indicator:unchecked,
 SourceTreeSubItemCheckBox::indicator:unchecked:hover {
-    image: url(./Dark/collapse.png);
+    image: url(./Dark/down.svg);
 }
 
 
@@ -863,14 +873,25 @@ FocusList::item {
 
 /* About dialog */
 
+#OBSAbout #icon {
+	padding: 0;
+}
+
+#OBSAbout QTextBrowser {
+	background: transparent;
+	padding: 2px 0;
+}
+
 * [themeID="aboutName"] {
 	font-size: 36px;
 	font-weight: bold;
+	padding: 0;
 }
 
 * [themeID="aboutVersion"] {
 	font-size: 16px;
 	margin-bottom: 20px;
+	padding: 0;
 }
 
 * [themeID="aboutInfo"] {
@@ -883,6 +904,92 @@ FocusList::item {
 
 /* Preview background color */
 
-* [themeID="displayBackgroundColor"] {
-    qproperty-displayBackgroundColor: #28282A;
+OBSQTDisplay {
+	qproperty-displayBackgroundColor: #28282A;
+}
+
+/* Preview/Program labels */
+
+* [themeID="previewProgramLabels"] {
+	font-size: 18px;
+	font-weight: bold;
+	color: rgb(122,121,122);
+}
+
+/* Settings Icons */
+
+OBSBasicSettings {
+    qproperty-generalIcon: url(./Dark/settings/general.svg);
+    qproperty-streamIcon: url(./Dark/settings/stream.svg);
+    qproperty-outputIcon: url(./Dark/settings/output.svg);
+    qproperty-audioIcon: url(./Dark/settings/audio.svg);
+    qproperty-videoIcon: url(./Dark/settings/video.svg);
+    qproperty-hotkeysIcon: url(./Dark/settings/hotkeys.svg);
+    qproperty-advancedIcon: url(./Dark/settings/advanced.svg);
+}
+
+/* Locked CheckBox */
+
+LockedCheckBox {
+    outline: none;
+    background: transparent;
+    padding: 0px;
+}
+
+LockedCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+}
+
+LockedCheckBox::indicator:checked {
+    image: url(./Dark/locked.svg);
+}
+
+LockedCheckBox::indicator:unchecked {
+    image: url(:res/images/unlocked.svg);
+}
+
+LockedCheckBox::indicator:checked:hover {
+    image: url(./Dark/locked.svg);
+}
+
+LockedCheckBox::indicator:unchecked:hover {
+    image: url(:res/images/unlocked.svg);
+}
+
+/* Visibilty CheckBox */
+
+VisibilityCheckBox {
+    outline: none;
+    background: transparent;
+    padding: 0px;
+}
+
+VisibilityCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+}
+
+VisibilityCheckBox::indicator:checked {
+    image: url(./Dark/visible.svg);
+}
+
+VisibilityCheckBox::indicator:unchecked {
+    image: url(:res/images/invisible.svg);
+}
+
+VisibilityCheckBox::indicator:checked:hover {
+    image: url(./Dark/visible.svg);
+}
+
+VisibilityCheckBox::indicator:unchecked:hover {
+    image: url(:res/images/invisible.svg);
+}
+
+* [themeID="trashIcon"] {
+    qproperty-icon: url(./Dark/trash.svg);
+}
+
+* [themeID="revertIcon"] {
+    qproperty-icon: url(./Dark/revert.svg);
 }

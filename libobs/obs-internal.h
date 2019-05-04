@@ -38,6 +38,8 @@
 
 #define NUM_TEXTURES 2
 #define MICROSECOND_DEN 1000000
+#define NUM_ENCODE_TEXTURES 3
+#define NUM_ENCODE_TEXTURE_FRAMES_TO_WAIT 1
 
 static inline int64_t packet_dts_usec(struct encoder_packet *packet)
 {
@@ -225,30 +227,55 @@ struct obs_vframe_info {
 	int count;
 };
 
+struct obs_tex_frame {
+	gs_texture_t *tex;
+	gs_texture_t *tex_uv;
+	uint32_t handle;
+	uint64_t timestamp;
+	uint64_t lock_key;
+	int count;
+	bool released;
+};
+
 struct obs_core_video {
 	graphics_t                      *graphics;
 	gs_stagesurf_t                  *copy_surfaces[NUM_TEXTURES];
 	gs_texture_t                    *render_textures[NUM_TEXTURES];
 	gs_texture_t                    *output_textures[NUM_TEXTURES];
 	gs_texture_t                    *convert_textures[NUM_TEXTURES];
+	gs_texture_t                    *convert_uv_textures[NUM_TEXTURES];
 	bool                            textures_rendered[NUM_TEXTURES];
 	bool                            textures_output[NUM_TEXTURES];
 	bool                            textures_copied[NUM_TEXTURES];
 	bool                            textures_converted[NUM_TEXTURES];
+	bool                            using_nv12_tex;
 	struct circlebuf                vframe_info_buffer;
+	struct circlebuf                vframe_info_buffer_gpu;
 	gs_effect_t                     *default_effect;
 	gs_effect_t                     *default_rect_effect;
 	gs_effect_t                     *opaque_effect;
 	gs_effect_t                     *solid_effect;
+	gs_effect_t                     *repeat_effect;
 	gs_effect_t                     *conversion_effect;
 	gs_effect_t                     *bicubic_effect;
 	gs_effect_t                     *lanczos_effect;
+	gs_effect_t                     *area_effect;
 	gs_effect_t                     *bilinear_lowres_effect;
 	gs_effect_t                     *premultiplied_alpha_effect;
 	gs_samplerstate_t               *point_sampler;
 	gs_stagesurf_t                  *mapped_surface;
 	int                             cur_texture;
 	long                            raw_active;
+	long                            gpu_encoder_active;
+	pthread_mutex_t                 gpu_encoder_mutex;
+	struct circlebuf                gpu_encoder_queue;
+	struct circlebuf                gpu_encoder_avail_queue;
+	DARRAY(obs_encoder_t *)         gpu_encoders;
+	os_sem_t                        *gpu_encode_semaphore;
+	os_event_t                      *gpu_encode_inactive;
+	pthread_t                       gpu_encode_thread;
+	bool                            gpu_encode_thread_initialized;
+	volatile bool                   gpu_encode_stop;
 
 	uint64_t                        video_time;
 	uint64_t                        video_avg_frame_time_ns;
@@ -616,12 +643,10 @@ struct obs_source {
 	struct obs_source_frame         *cur_async_frame;
 	bool                            async_gpu_conversion;
 	enum video_format               async_format;
-	enum video_format               async_cache_format;
-	enum gs_color_format            async_texture_format;
-	float                           async_color_matrix[16];
 	bool                            async_full_range;
-	float                           async_color_range_min[3];
-	float                           async_color_range_max[3];
+	enum video_format               async_cache_format;
+	bool                            async_cache_full_range;
+	enum gs_color_format            async_texture_format;
 	int                             async_plane_offset[2];
 	bool                            async_flip;
 	bool                            async_active;
@@ -817,6 +842,7 @@ struct obs_weak_output {
 #define CAPTION_LINE_BYTES (4*CAPTION_LINE_CHARS)
 struct caption_text {
 	char text[CAPTION_LINE_BYTES+1];
+	double display_duration;
 	struct caption_text *next;
 };
 
@@ -940,6 +966,9 @@ struct obs_encoder {
 	struct obs_encoder_info         info;
 	struct obs_weak_encoder         *control;
 
+	/* allows re-routing to another encoder */
+	struct obs_encoder_info         orig_info;
+
 	pthread_mutex_t                 init_mutex;
 
 	uint32_t                        samplerate;
@@ -1009,6 +1038,13 @@ extern void obs_encoder_add_output(struct obs_encoder *encoder,
 		struct obs_output *output);
 extern void obs_encoder_remove_output(struct obs_encoder *encoder,
 		struct obs_output *output);
+
+extern bool start_gpu_encode(obs_encoder_t *encoder);
+extern void stop_gpu_encode(obs_encoder_t *encoder);
+
+extern void do_encode(struct obs_encoder *encoder, struct encoder_frame *frame);
+extern void send_off_encoder_packet(obs_encoder_t *encoder, bool success,
+		bool received, struct encoder_packet *pkt);
 
 void obs_encoder_destroy(obs_encoder_t *encoder);
 

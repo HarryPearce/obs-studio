@@ -5,6 +5,7 @@
 #include "visibility-checkbox.hpp"
 #include "locked-checkbox.hpp"
 #include "expand-checkbox.hpp"
+#include "platform.hpp"
 
 #include <obs-frontend-api.h>
 #include <obs.h>
@@ -35,6 +36,7 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_)
 	  sceneitem    (sceneitem_)
 {
 	setAttribute(Qt::WA_TranslucentBackground);
+	setMouseTracking(true);
 
 	obs_source_t *source = obs_sceneitem_get_source(sceneitem);
 	const char *name = obs_source_get_name(source);
@@ -58,12 +60,12 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_)
 
 	vis = new VisibilityCheckBox();
 	vis->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
-	vis->setMaximumSize(16, 16);
+	vis->setFixedSize(16, 16);
 	vis->setChecked(obs_sceneitem_visible(sceneitem));
 
 	lock = new LockedCheckBox();
 	lock->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
-	lock->setMaximumSize(16, 16);
+	lock->setFixedSize(16, 16);
 	lock->setChecked(obs_sceneitem_locked(sceneitem));
 
 	label = new QLabel(QT_UTF8(name));
@@ -77,10 +79,11 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_)
 #endif
 
 	boxLayout = new QHBoxLayout();
-	boxLayout->setContentsMargins(1, 1, 2, 1);
+	boxLayout->setContentsMargins(1, 1, 1, 1);
 	boxLayout->setSpacing(1);
 	boxLayout->addWidget(label);
 	boxLayout->addWidget(vis);
+	boxLayout->setSpacing(2);
 	boxLayout->addWidget(lock);
 #ifdef __APPLE__
 	/* Hack: Fixes a bug where scrollbars would be above the lock icon */
@@ -129,6 +132,12 @@ void SourceTreeItem::DisconnectSignals()
 	removeSignal.Disconnect();
 }
 
+void SourceTreeItem::Clear()
+{
+	DisconnectSignals();
+	sceneitem = nullptr;
+}
+
 void SourceTreeItem::ReconnectSignals()
 {
 	if (!sceneitem)
@@ -150,10 +159,8 @@ void SourceTreeItem::ReconnectSignals()
 					Q_ARG(OBSSceneItem, curItem));
 			curItem = nullptr;
 		}
-		if (!curItem) {
-			this_->DisconnectSignals();
-			this_->sceneitem = nullptr;
-		}
+		if (!curItem)
+			QMetaObject::invokeMethod(this_, "Clear");
 	};
 
 	auto itemVisible = [] (void *data, calldata_t *cd)
@@ -254,6 +261,7 @@ void SourceTreeItem::EnterEditMode()
 	setFocusPolicy(Qt::StrongFocus);
 	boxLayout->removeWidget(label);
 	editor = new QLineEdit(label->text());
+	editor->selectAll();
 	editor->installEventFilter(this);
 	boxLayout->insertWidget(1, editor);
 	setFocusProxy(editor);
@@ -695,8 +703,14 @@ int SourceTreeModel::rowCount(const QModelIndex &parent) const
 	return parent.isValid() ? 0 : items.count();
 }
 
-QVariant SourceTreeModel::data(const QModelIndex &, int) const
+QVariant SourceTreeModel::data(const QModelIndex &index, int role) const
 {
+	if (role == Qt::AccessibleTextRole) {
+		OBSSceneItem item = items[index.row()];
+		obs_source_t *source = obs_sceneitem_get_source(item);
+		return QVariant(QT_UTF8(obs_source_get_name(source)));
+	}
+
 	return QVariant();
 }
 
@@ -901,6 +915,12 @@ SourceTree::SourceTree(QWidget *parent_) : QListView(parent_)
 		"*[bgColor=\"6\"]{background-color:rgba(255,68,255,33%);}" \
 		"*[bgColor=\"7\"]{background-color:rgba(68,68,68,33%);}" \
 		"*[bgColor=\"8\"]{background-color:rgba(255,255,255,33%);}"));
+
+	setMouseTracking(true);
+
+	UpdateNoSourcesMessage();
+	connect(App(), &OBSApp::StyleChanged,
+			this, &SourceTree::UpdateNoSourcesMessage);
 }
 
 void SourceTree::ResetWidgets()
@@ -1254,6 +1274,24 @@ void SourceTree::dropEvent(QDropEvent *event)
 	QListView::dropEvent(event);
 }
 
+void SourceTree::mouseMoveEvent(QMouseEvent *event)
+{
+	QPoint pos = event->pos();
+	SourceTreeItem *item = qobject_cast<SourceTreeItem *>(childAt(pos));
+
+	OBSBasicPreview *preview = OBSBasicPreview::Get();
+	preview->hoveredListItem = !!item ? item->sceneitem : nullptr;
+
+	QListView::mouseMoveEvent(event);
+}
+
+void SourceTree::leaveEvent(QEvent *event)
+{
+	OBSBasicPreview *preview = OBSBasicPreview::Get();
+	preview->hoveredListItem = nullptr;
+	QListView::leaveEvent(event);
+}
+
 void SourceTree::selectionChanged(
 		const QItemSelection &selected,
 		const QItemSelection &deselected)
@@ -1396,4 +1434,57 @@ void SourceTree::UngroupSelectedGroups()
 void SourceTree::AddGroup()
 {
 	GetStm()->AddGroup();
+}
+
+void SourceTree::UpdateNoSourcesMessage()
+{
+	std::string darkPath;
+	GetDataFilePath("themes/Dark/no_sources.svg", darkPath);
+
+	QColor color = palette().text().color();
+	bool lightTheme = (color.redF() < 0.5);
+	QString file = lightTheme
+		? ":res/images/no_sources.svg"
+		: darkPath.c_str();
+	iconNoSources.load(file);
+
+	QTextOption opt(Qt::AlignHCenter);
+	opt.setWrapMode(QTextOption::WordWrap);
+	textNoSources.setTextOption(opt);
+	textNoSources.setText(QTStr("NoSources.Label").replace("\n", "<br/>"));
+
+	textPrepared = false;
+}
+
+void SourceTree::paintEvent(QPaintEvent *event)
+{
+	SourceTreeModel *stm = GetStm();
+	if (stm && !stm->items.count()) {
+		QPainter p(viewport());
+
+		if (!textPrepared) {
+			textNoSources.prepare(QTransform(), p.font());
+			textPrepared = true;
+		}
+
+		QRectF iconRect = iconNoSources.viewBoxF();
+
+		QSizeF iconSize = iconRect.size();
+		QSizeF textSize = textNoSources.size();
+		QSizeF thisSize = size();
+
+		qreal totalHeight = textSize.height() + iconSize.height();
+
+		qreal x = thisSize.width() / 2.0 - textSize.width() / 2.0;
+		qreal y = thisSize.height() / 2.0 - totalHeight / 2.0;
+		p.drawStaticText(x, y, textNoSources);
+
+		x = thisSize.width() / 2.0 - iconSize.width() / 2.0;
+		y += textSize.height();
+		iconRect.moveTo(x, y);
+
+		iconNoSources.render(&p, iconRect);
+	} else {
+		QListView::paintEvent(event);
+	}
 }

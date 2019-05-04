@@ -464,7 +464,7 @@ static obs_properties_t *vaapi_properties(void *unused)
 
 	list = obs_properties_add_list(props, "vaapi_device", "VAAPI Device",
 			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	char path[128] = "/dev/dri/renderD1";
+	char path[32] = "/dev/dri/renderD1";
 	for (int i = 28;; i++) {
 		sprintf(path, "/dev/dri/renderD1%d", i);
 		if (access(path, F_OK) == 0) {
@@ -490,8 +490,10 @@ static obs_properties_t *vaapi_properties(void *unused)
 	obs_property_list_add_int(list, "720p60/1080p30 (4.1)", 41);
 	obs_property_list_add_int(list, "1080p60 (4.2)", 42);
 
-	obs_properties_add_int(props, "bitrate", obs_module_text("Bitrate"), 0,
+	obs_property_t *p;
+	p = obs_properties_add_int(props, "bitrate", obs_module_text("Bitrate"), 0,
 			300000, 50);
+	obs_property_int_set_suffix(p, " Kbps");
 
 	obs_properties_add_int(props, "keyint_sec",
 			obs_module_text("Keyframe Interval (seconds)"), 0, 20,
