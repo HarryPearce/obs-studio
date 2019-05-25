@@ -100,12 +100,19 @@ QMenuBar::item {
     background-color: rgb(58,57,58); /* dark */
 }
 
-QListWidget::item:selected:!active {
+QListWidget {
+    font-family: "MS Shell Dlg 2";
+    font-size: 8pt;
+}
+
+QListWidget::item:selected:!active,
+SourceTree::item:selected:!active {
     color: rgb(255, 255, 255);
     background-color: rgb(48,47,48);
 }
 
-QListWidget QLineEdit {
+QListWidget QLineEdit,
+SourceTree QLineEdit {
     padding-top: 0px;
     padding-bottom: 0px;
     padding-right: 0;
@@ -357,11 +364,6 @@ QLineEdit, QTextEdit, QPlainTextEdit {
     padding: 2px 2px 3px 7px;
 }
 
-OBSHotkeyWidget QLineEdit {
-    margin: 0px 3px 0px 0px;
-}
-
-
 /* Spinbox and doubleSpinbox */
 
 QSpinBox, QDoubleSpinBox {
@@ -457,10 +459,6 @@ QPushButton::menu-indicator {
     subcontrol-position: right;
     subcontrol-origin: padding;
     width: 25px;
-}
-
-QPushButton[themeID="hotkeyButtons"] {
-    margin: 1px  2px;
 }
 
 /* Sliders */

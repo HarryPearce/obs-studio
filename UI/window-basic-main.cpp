@@ -2209,6 +2209,7 @@ void OBSBasic::ClearHotkeys()
 	obs_hotkey_pair_unregister(streamingHotkeys);
 	obs_hotkey_pair_unregister(recordingHotkeys);
 	obs_hotkey_pair_unregister(replayBufHotkeys);
+	obs_hotkey_pair_unregister(togglePreviewHotkeys);
 	obs_hotkey_unregister(forceStreamingStopHotkey);
 	obs_hotkey_unregister(togglePreviewProgramHotkey);
 	obs_hotkey_unregister(transitionHotkey);
@@ -3353,9 +3354,11 @@ void OBSBasic::RenderMain(void *data, uint32_t cx, uint32_t cy)
 	gs_viewport_push();
 	gs_projection_push();
 
-	QSize previewSize = GetPixelSize(window->ui->preview);
-	float right  = float(previewSize.width())  - window->previewX;
-	float bottom = float(previewSize.height()) - window->previewY;
+	obs_display_t *display = window->ui->preview->GetDisplay();
+	uint32_t width, height;
+	obs_display_size(display, &width, &height);
+	float right  = float(width)  - window->previewX;
+	float bottom = float(height) - window->previewY;
 
 	gs_ortho(-window->previewX, right,
 		-window->previewY, bottom,
@@ -3419,6 +3422,11 @@ void OBSBasic::SetService(obs_service_t *newService)
 {
 	if (newService)
 		service = newService;
+}
+
+int OBSBasic::GetTransitionDuration()
+{
+	return ui->transitionDuration->value();
 }
 
 bool OBSBasic::StreamingActive() const
@@ -5182,9 +5190,10 @@ void OBSBasic::StreamStopping()
 
 void OBSBasic::StreamingStop(int code, QString last_error)
 {
-	const char *errorDescription;
+	const char *errorDescription = "";
 	DStr errorMessage;
 	bool use_last_error = false;
+	bool encode_error = false;
 
 	switch (code) {
 	case OBS_OUTPUT_BAD_PATH:
@@ -5198,6 +5207,10 @@ void OBSBasic::StreamingStop(int code, QString last_error)
 
 	case OBS_OUTPUT_INVALID_STREAM:
 		errorDescription = Str("Output.ConnectFail.InvalidStream");
+		break;
+
+	case OBS_OUTPUT_ENCODE_ERROR:
+		encode_error = true;
 		break;
 
 	default:
@@ -5238,10 +5251,16 @@ void OBSBasic::StreamingStop(int code, QString last_error)
 
 	blog(LOG_INFO, STREAMING_STOP);
 
-	if (code != OBS_OUTPUT_SUCCESS && isVisible()) {
+	if (encode_error) {
+		OBSMessageBox::information(this,
+				QTStr("Output.StreamEncodeError.Title"),
+				QTStr("Output.StreamEncodeError.Msg"));
+
+	} else if (code != OBS_OUTPUT_SUCCESS && isVisible()) {
 		OBSMessageBox::information(this,
 				QTStr("Output.ConnectFail.Title"),
 				QT_UTF8(errorMessage));
+
 	} else if (code != OBS_OUTPUT_SUCCESS && !isVisible()) {
 		SysTrayNotify(QT_UTF8(errorDescription), QSystemTrayIcon::Warning);
 	}
@@ -5365,6 +5384,11 @@ void OBSBasic::RecordingStop(int code, QString last_error)
 		OBSMessageBox::critical(this,
 				QTStr("Output.RecordFail.Title"),
 				QTStr("Output.RecordFail.Unsupported"));
+
+	} else if (code == OBS_OUTPUT_ENCODE_ERROR && isVisible()) {
+		OBSMessageBox::warning(this,
+				QTStr("Output.RecordError.Title"),
+				QTStr("Output.RecordError.EncodeErrorMsg"));
 
 	} else if (code == OBS_OUTPUT_NO_SPACE && isVisible()) {
 		OBSMessageBox::warning(this,
@@ -6841,7 +6865,7 @@ void OBSBasic::SystemTray(bool firstStarted)
 {
 	if (!QSystemTrayIcon::isSystemTrayAvailable())
 		return;
-	if (!trayIcon)
+	if (!trayIcon && !firstStarted)
 		return;
 
 	bool sysTrayWhenStarted = config_get_bool(GetGlobalConfig(),
@@ -7311,4 +7335,12 @@ bool SceneRenameDelegate::eventFilter(QObject *editor, QEvent *event)
 	}
 
 	return QStyledItemDelegate::eventFilter(editor, event);
+}
+
+void OBSBasic::UpdatePatronJson(const QString &text, const QString &error)
+{
+	if (!error.isEmpty())
+		return;
+
+	patronJson = QT_TO_UTF8(text);
 }

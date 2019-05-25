@@ -114,6 +114,7 @@ private:
 class OBSBasic : public OBSMainWindow {
 	Q_OBJECT
 
+	friend class OBSAbout;
 	friend class OBSBasicPreview;
 	friend class OBSBasicStatusBar;
 	friend class OBSBasicSourceSelect;
@@ -233,6 +234,9 @@ private:
 	QPointer<QWidget> programWidget;
 	QPointer<QVBoxLayout> programLayout;
 	QPointer<QLabel> programLabel;
+
+	QScopedPointer<QThread> patronJsonThread;
+	std::string patronJson;
 
 	void          UpdateMultiviewProjectorMenu();
 
@@ -463,6 +467,8 @@ public slots:
 			bool create_new,
 			const QString &name = QString());
 
+	void UpdatePatronJson(const QString &text, const QString &error);
+
 private slots:
 	void AddSceneItem(OBSSceneItem item);
 	void AddScene(OBSSource source);
@@ -570,6 +576,8 @@ public:
 
 	obs_service_t *GetService();
 	void          SetService(obs_service_t *service);
+
+	int GetTransitionDuration();
 
 	inline bool IsPreviewProgramMode() const
 	{
