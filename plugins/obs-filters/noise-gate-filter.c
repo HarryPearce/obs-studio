@@ -85,7 +85,7 @@ static void noise_gate_update(void *data, obs_data_t *s)
 	ng->attack_rate = 1.0f / (ms_to_secf(attack_time_ms) * sample_rate);
 	ng->release_rate = 1.0f / (ms_to_secf(release_time_ms) * sample_rate);
 
-	const float threshold_diff = ng->open_threshold - ng->close_threshold;
+	const float threshold_diff = fmaxf(1.0f,fabsf(ng->open_threshold - ng->close_threshold));
 	const float min_decay_period = (1.0f / 75.0f) * sample_rate;
 
 	ng->decay_rate = threshold_diff / min_decay_period;
