@@ -2,11 +2,11 @@
 #include <inttypes.h>
 #include <math.h>
 
-#include <obs-module.h>
-#include <media-io/audio-math.h>
-#include <util/platform.h>
-#include <util/circlebuf.h>
-#include <util/threading.h>
+#include "..\libobs\obs-module.h"
+#include "..\libobs\media-io\audio-math.h"// <media-io/audio-math.h>
+#include "..\libobs\util\platform.h"//<util/platform.h>
+#include "..\libobs\util\circlebuf.h"//<util/circlebuf.h>
+#include "..\libobs\util\threading.h" //<util/threading.h>
 
 #pragma region Defines
 

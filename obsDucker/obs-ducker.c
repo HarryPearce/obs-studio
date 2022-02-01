@@ -1,5 +1,5 @@
-#include <obs-module.h>
-#include "obs-filters-config.h"
+#include "..\libobs\obs-module.h"
+#include "..\build\plugins\obs-filters\config\obs-filters-config.h"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-ducker", "en-US")

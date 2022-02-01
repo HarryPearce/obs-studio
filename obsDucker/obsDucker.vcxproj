@@ -22,33 +22,33 @@
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{DCE37496-48D7-4B1A-A508-217A68B25154}</ProjectGuid>
     <RootNamespace>obsDucker</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.18362.0</WindowsTargetPlatformVersion>
     <ProjectName>obs-ducker</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
@@ -71,7 +71,7 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <OutDir>C:\Program Files (x86)\obs-studio\obs-plugins\32bit\</OutDir>
+    <OutDir>..\..\..\..\..\..\Program Files\obs-studio\obs-plugins\64bit</OutDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -79,10 +79,10 @@
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>G:\obs-deps\win32\include;C:\Users\Admin\Documents\GitHub\obs-studio\build32\plugins\obs-filters\config;C:\Users\Admin\Documents\GitHub\obs-studio\libobs;C:\Users\Admin\Documents\GitHub\obs-studio\build32\config;C:\Users\Admin\Documents\GitHub\obs-studio\deps\w32-pthreads;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>G:\obs-deps\win64\include;C:\Users\Admin\Documents\GitHub\obs-studio\build\plugins\obs-filters\config;C:\Users\Admin\Documents\GitHub\obs-studio\libobs;C:\Users\Admin\Documents\GitHub\obs-studio\build\config;C:\Users\Admin\Documents\GitHub\obs-studio\deps\w32-pthreads;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>..\build32\libobs\Debug\obs.lib;..\build32\\deps\w32-pthreads\Debug\w32-pthreads.lib;G:\obs-deps\win32\include\..\bin\speexdsp.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>..\build\libobs\Debug\obs.lib;..\build\\deps\w32-pthreads\Debug\w32-pthreads.lib;G:\obs-deps\win64\include\..\bin\speexdsp.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -122,19 +122,19 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ProjectReference Include="..\build32\deps\w32-pthreads\w32-pthreads.vcxproj">
-      <Project>{ad46f7cd-91bb-39e8-91b7-8fb1ddfed0a9}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\build32\libobs\libobs.vcxproj">
-      <Project>{3bcc2139-98ab-31e6-b82d-1838da9e196d}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\build32\ZERO_CHECK.vcxproj">
-      <Project>{ce654798-7872-3493-9210-77b787187416}</Project>
-    </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
     <ClCompile Include="ducker-filter.c" />
     <ClCompile Include="obs-ducker.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\build\deps\w32-pthreads\w32-pthreads.vcxproj">
+      <Project>{d53748c7-f001-3108-85bd-9f12a39883d9}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\build\libobs\libobs.vcxproj">
+      <Project>{6dfcdb98-afbf-3568-acf0-2fac14dafb3f}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\build\ZERO_CHECK.vcxproj">
+      <Project>{68e96cda-0d5a-352d-999b-204ca4164f8d}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
