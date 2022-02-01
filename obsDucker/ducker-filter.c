@@ -10,79 +10,90 @@
 
 #pragma region Defines
 
-#define do_log(level, format, ...) \
+#define do_log(level, format, ...)            \
 	blog(level, "[ducker: '%s'] " format, \
-			obs_source_get_name(cd->context), ##__VA_ARGS__)
+	     obs_source_get_name(cd->context), ##__VA_ARGS__)
 
-#define warn(format, ...)  do_log(LOG_WARNING, format, ##__VA_ARGS__)
-#define info(format, ...)  do_log(LOG_INFO,    format, ##__VA_ARGS__)
+#define warn(format, ...) do_log(LOG_WARNING, format, ##__VA_ARGS__)
+#define info(format, ...) do_log(LOG_INFO, format, ##__VA_ARGS__)
 
 #ifdef _DEBUG
-#define debug(format, ...) do_log(LOG_DEBUG,   format, ##__VA_ARGS__)
+#define debug(format, ...) do_log(LOG_DEBUG, format, ##__VA_ARGS__)
 #else
 #define debug(format, ...)
 #endif
 
-#define S_RATIO				"ratio"
-#define S_THRESHOLD			"threshold"
-#define S_OPEN_THRESHOLD                "open_threshold"
-#define S_CLOSE_THRESHOLD               "close_threshold"
-#define S_ATTACK_TIME                   "attack_time"
-#define S_RELEASE_TIME                  "release_time"
-#define S_HOLD_TIME			"hold_time"
-#define S_DUCKING_SOURCE		"ducking_source"
-#define S_LIMITER_THRESHOLD		"limiter_threshold"
+#define S_RATIO "ratio"
+#define S_THRESHOLD "threshold"
+#define S_OPEN_THRESHOLD "open_threshold"
+#define S_CLOSE_THRESHOLD "close_threshold"
+#define S_ATTACK_TIME "attack_time"
+#define S_RELEASE_TIME "release_time"
+#define S_HOLD_TIME "hold_time"
+#define S_DUCKING_SOURCE "ducking_source"
+#define S_LIMITER_THRESHOLD "limiter_threshold"
 
 #define MT_ obs_module_text
-#define TEXT_RATIO			"Ratio (X:1)"
-#define TEXT_THRESHOLD                  "Threshold (dB)"
-#define TEXT_OPEN_THRESHOLD             "Open Threshold (dB)"
-#define TEXT_CLOSE_THRESHOLD            "Close Threshold (dB)"
-#define TEXT_ATTACK_TIME                "Attack (ms)"
-#define TEXT_RELEASE_TIME               "Release (ms)"
-#define TEXT_HOLD_TIME			"Hold (ms)"
-#define TEXT_DUCKING_SOURCE		"Ducking Source"
-#define TEXT_LIMITER_THRESHOLD		"Limiter Threshold (dB)"
+#define TEXT_RATIO "Ratio (X:1)"
+#define TEXT_THRESHOLD "Threshold (dB)"
+#define TEXT_OPEN_THRESHOLD "Open Threshold (dB)"
+#define TEXT_CLOSE_THRESHOLD "Close Threshold (dB)"
+#define TEXT_ATTACK_TIME "Attack (ms)"
+#define TEXT_RELEASE_TIME "Release (ms)"
+#define TEXT_HOLD_TIME "Hold (ms)"
+#define TEXT_DUCKING_SOURCE "Ducking Source"
+#define TEXT_LIMITER_THRESHOLD "Limiter Threshold (dB)"
 
-#define MIN_RATIO                       1.0
-#define MAX_RATIO                       32.0
-#define MIN_THRESHOLD_DB                -60.0
-#define MAX_THRESHOLD_DB                0.0f
-#define MIN_ATK_HLD_RLS_MS              1
-#define MAX_RLS_HLD_MS                  10000
-#define MAX_ATK_MS                      500
+#define MIN_RATIO 1.0
+#define MAX_RATIO 32.0
+#define MIN_THRESHOLD_DB -60.0
+#define MAX_THRESHOLD_DB 0.0f
+#define MIN_ATK_HLD_RLS_MS 1
+#define MAX_RLS_HLD_MS 10000
+#define MAX_ATK_MS 500
 
-#define DEFAULT_AUDIO_BUF_MS            10
+#define DEFAULT_AUDIO_BUF_MS 10
 
-#define MS_IN_S                         1000
-#define MS_IN_S_F                       ((float)MS_IN_S)
+#define MS_IN_S 1000
+#define MS_IN_S_F ((float)MS_IN_S)
 #pragma endregion
 
 #pragma region Structs
 
-struct ducker_data
-{
+struct ducker_data {
 	obs_source_t *context;
-
+	float *envelope_buf;
+	//size_t envelope_buf_len;
 	size_t audio_buf_len;
 
 	float ratio;
 	float threshold_mul;
+	float threshold_db;
 	float attack_rate;
 	float release_rate;
 	float open_threshold_mul;
+	float open_threshold_db;
 	float close_threshold_mul;
+	float close_threshold_db;
 	float hold_time_s;
 	float held_time_s;
 	float limiter_threshold_mul;
+	float limiter_threshold_db;
+
+	float attack_gain;
+	float release_gain;
+
+	float slope;
 
 	float sample_period_s;
-	
+
 	float gate;
 	bool isOpen;
 
 	size_t num_channels;
 	uint32_t sample_rate;
+
+	float envelope;
 
 	pthread_mutex_t sidechain_update_mutex;
 	uint64_t sidechain_check_time;
@@ -95,8 +106,7 @@ struct ducker_data
 	size_t max_sidechain_frames;
 };
 
-struct sidechain_prop_info
-{
+struct sidechain_prop_info {
 	obs_property_t *sources;
 	obs_source_t *parent;
 };
@@ -113,7 +123,7 @@ static inline obs_source_t *get_sidechain(struct ducker_data *cd)
 }
 
 static inline void get_sidechain_data(struct ducker_data *cd,
-	const uint32_t num_samples)
+				      const uint32_t num_samples)
 {
 	size_t data_size = cd->audio_buf_len * sizeof(float);
 	if (!data_size)
@@ -123,15 +133,14 @@ static inline void get_sidechain_data(struct ducker_data *cd,
 	if (cd->max_sidechain_frames < num_samples)
 		cd->max_sidechain_frames = num_samples;
 
-	if (cd->sidechain_data[0].size < data_size)
-	{
+	if (cd->sidechain_data[0].size < data_size) {
 		pthread_mutex_unlock(&cd->sidechain_mutex);
 		goto clear;
 	}
 
 	for (size_t i = 0; i < cd->num_channels; i++)
 		circlebuf_pop_front(&cd->sidechain_data[i],
-			cd->sidechain_buf[i], data_size);
+				    cd->sidechain_buf[i], data_size);
 
 	pthread_mutex_unlock(&cd->sidechain_mutex);
 	return;
@@ -144,19 +153,22 @@ clear:
 static void resize_env_buffer(struct ducker_data *cd, size_t len)
 {
 	cd->audio_buf_len = len;
-	//cd->envelope_buf = brealloc(cd->envelope_buf, len * sizeof(float));
+	cd->envelope_buf = brealloc(cd->envelope_buf, len * sizeof(float));
 
 	for (size_t i = 0; i < cd->num_channels; i++)
-		cd->sidechain_buf[i] = brealloc(cd->sidechain_buf[i],
-			len * sizeof(float));
+		cd->sidechain_buf[i] =
+			brealloc(cd->sidechain_buf[i], len * sizeof(float));
 }
-
 
 static inline float ms_to_secf(int ms)
 {
 	return (float)ms / 1000.0f;
 }
 
+static inline float gain_coefficient(uint32_t sample_rate, float time)
+{
+	return (float)exp(-1.0f / (sample_rate * time));
+}
 
 #pragma endregion
 
@@ -178,7 +190,7 @@ static bool add_sources(void *data, obs_source_t *source)
 }
 
 static void sidechain_capture(void *param, obs_source_t *source,
-	const struct audio_data *audio_data, bool muted)
+			      const struct audio_data *audio_data, bool muted)
 {
 	struct ducker_data *cd = param;
 
@@ -194,30 +206,24 @@ static void sidechain_capture(void *param, obs_source_t *source,
 	if (!expected_size)
 		goto unlock;
 
-	if (cd->sidechain_data[0].size > expected_size * 2)
-	{
-		for (size_t i = 0; i < cd->num_channels; i++)
-		{
+	if (cd->sidechain_data[0].size > expected_size * 2) {
+		for (size_t i = 0; i < cd->num_channels; i++) {
 			circlebuf_pop_front(&cd->sidechain_data[i], NULL,
-				expected_size);
+					    expected_size);
 		}
 	}
 
-	if (muted)
-	{
-		for (size_t i = 0; i < cd->num_channels; i++)
-		{
+	if (muted) {
+		for (size_t i = 0; i < cd->num_channels; i++) {
 			circlebuf_push_back_zero(&cd->sidechain_data[i],
-				audio_data->frames * sizeof(float));
+						 audio_data->frames *
+							 sizeof(float));
 		}
-	}
-	else
-	{
-		for (size_t i = 0; i < cd->num_channels; i++)
-		{
+	} else {
+		for (size_t i = 0; i < cd->num_channels; i++) {
 			circlebuf_push_back(&cd->sidechain_data[i],
-				audio_data->data[i],
-				audio_data->frames * sizeof(float));
+					    audio_data->data[i],
+					    audio_data->frames * sizeof(float));
 		}
 	}
 
@@ -238,21 +244,18 @@ static void ducker_destroy(void *data)
 {
 	struct ducker_data *cd = data;
 
-	if (cd->weak_sidechain)
-	{
+	if (cd->weak_sidechain) {
 		obs_source_t *sidechain = get_sidechain(cd);
-		if (sidechain)
-		{
-			obs_source_remove_audio_capture_callback(sidechain,
-				sidechain_capture, cd);
+		if (sidechain) {
+			obs_source_remove_audio_capture_callback(
+				sidechain, sidechain_capture, cd);
 			obs_source_release(sidechain);
 		}
 
 		obs_weak_source_release(cd->weak_sidechain);
 	}
 
-	for (size_t i = 0; i < MAX_AUDIO_CHANNELS; i++)
-	{
+	for (size_t i = 0; i < MAX_AUDIO_CHANNELS; i++) {
 		circlebuf_free(&cd->sidechain_data[i]);
 		bfree(cd->sidechain_buf[i]);
 	}
@@ -270,43 +273,55 @@ static void ducker_update(void *data, obs_data_t *s)
 
 	const uint32_t sample_rate =
 		audio_output_get_sample_rate(obs_get_audio());
-	const size_t num_channels =
-		audio_output_get_channels(obs_get_audio());
-	const float attack_time_ms =
-		(float)obs_data_get_int(s, S_ATTACK_TIME);
+	const size_t num_channels = audio_output_get_channels(obs_get_audio());
+	const float attack_time_ms = (float)obs_data_get_int(s, S_ATTACK_TIME);
 	const float release_time_ms =
 		(float)obs_data_get_int(s, S_RELEASE_TIME);
-	const float hold_time =
-		(float)obs_data_get_int(s, S_HOLD_TIME);
+	const float hold_time = (float)obs_data_get_int(s, S_HOLD_TIME);
 
-	const char *sidechain_name =
-		obs_data_get_string(s, S_DUCKING_SOURCE);
+	const char *sidechain_name = obs_data_get_string(s, S_DUCKING_SOURCE);
 
 	cd->ratio = (float)obs_data_get_double(s, S_RATIO);
-	cd->threshold_mul = db_to_mul((float)obs_data_get_double(s, S_THRESHOLD));
-	cd->open_threshold_mul = db_to_mul((float)obs_data_get_double(s, S_OPEN_THRESHOLD));
-	cd->close_threshold_mul = db_to_mul((float)obs_data_get_double(s, S_CLOSE_THRESHOLD));
-	cd->limiter_threshold_mul = db_to_mul((float)obs_data_get_double(s, S_LIMITER_THRESHOLD));	
+	cd->slope = 1.0f - (1.0f / (float)obs_data_get_double(s, S_RATIO));
+	cd->threshold_mul =
+		db_to_mul((float)obs_data_get_double(s, S_THRESHOLD));
+	cd->threshold_db = (float)obs_data_get_double(s, S_THRESHOLD);
+	cd->open_threshold_mul =
+		db_to_mul((float)obs_data_get_double(s, S_OPEN_THRESHOLD));
+	cd->open_threshold_db = (float)obs_data_get_double(s, S_OPEN_THRESHOLD);
+	cd->close_threshold_mul =
+		db_to_mul((float)obs_data_get_double(s, S_CLOSE_THRESHOLD));
+	cd->close_threshold_db =
+		(float)obs_data_get_double(s, S_CLOSE_THRESHOLD);
+	cd->limiter_threshold_mul =
+		db_to_mul((float)obs_data_get_double(s, S_LIMITER_THRESHOLD));
+	cd->limiter_threshold_db =
+		(float)obs_data_get_double(s, S_LIMITER_THRESHOLD);
 
-	cd->attack_rate = 1.0f / (ms_to_secf(attack_time_ms) * (float)sample_rate);
-	cd->release_rate = 1.0f / (ms_to_secf(release_time_ms) * (float)sample_rate);
+	cd->attack_rate =
+		1.0f / (ms_to_secf(attack_time_ms) * (float)sample_rate);
+	cd->release_rate =
+		1.0f / (ms_to_secf(release_time_ms) * (float)sample_rate);
+
+	cd->attack_gain =
+		gain_coefficient(sample_rate, ms_to_secf(attack_time_ms));
+	cd->release_gain =
+		gain_coefficient(sample_rate, ms_to_secf(release_time_ms));
 
 	cd->hold_time_s = ms_to_secf(hold_time);
 
 	cd->num_channels = num_channels;
 	cd->sample_rate = sample_rate;
 	cd->sample_period_s = 1.0f / sample_rate;
-	
-	bool valid_sidechain =
-		*sidechain_name && strcmp(sidechain_name, "none") != 0;
+
+	bool valid_sidechain = *sidechain_name &&
+			       strcmp(sidechain_name, "none") != 0;
 	obs_weak_source_t *old_weak_sidechain = NULL;
 
 	pthread_mutex_lock(&cd->sidechain_update_mutex);
 
-	if (!valid_sidechain)
-	{
-		if (cd->weak_sidechain)
-		{
+	if (!valid_sidechain) {
+		if (cd->weak_sidechain) {
 			old_weak_sidechain = cd->weak_sidechain;
 			cd->weak_sidechain = NULL;
 		}
@@ -314,14 +329,10 @@ static void ducker_update(void *data, obs_data_t *s)
 		bfree(cd->sidechain_name);
 		cd->sidechain_name = NULL;
 
-	}
-	else
-	{
+	} else {
 		if (!cd->sidechain_name ||
-			strcmp(cd->sidechain_name, sidechain_name) != 0)
-		{
-			if (cd->weak_sidechain)
-			{
+		    strcmp(cd->sidechain_name, sidechain_name) != 0) {
+			if (cd->weak_sidechain) {
 				old_weak_sidechain = cd->weak_sidechain;
 				cd->weak_sidechain = NULL;
 			}
@@ -334,15 +345,13 @@ static void ducker_update(void *data, obs_data_t *s)
 
 	pthread_mutex_unlock(&cd->sidechain_update_mutex);
 
-	if (old_weak_sidechain)
-	{
+	if (old_weak_sidechain) {
 		obs_source_t *old_sidechain =
 			obs_weak_source_get_source(old_weak_sidechain);
 
-		if (old_sidechain)
-		{
-			obs_source_remove_audio_capture_callback(old_sidechain,
-				sidechain_capture, cd);
+		if (old_sidechain) {
+			obs_source_remove_audio_capture_callback(
+				old_sidechain, sidechain_capture, cd);
 			obs_source_release(old_sidechain);
 		}
 
@@ -361,17 +370,14 @@ static void *ducker_create(obs_data_t *settings, obs_source_t *filter)
 	cd->isOpen = false;
 	cd->held_time_s = 0.0f;
 	cd->audio_buf_len = 0;
-	cd->level = 0.0f;
 
-	if (pthread_mutex_init(&cd->sidechain_mutex, NULL) != 0)
-	{
+	if (pthread_mutex_init(&cd->sidechain_mutex, NULL) != 0) {
 		blog(LOG_ERROR, "Failed to create mutex");
 		bfree(cd);
 		return NULL;
 	}
 
-	if (pthread_mutex_init(&cd->sidechain_update_mutex, NULL) != 0)
-	{
+	if (pthread_mutex_init(&cd->sidechain_update_mutex, NULL) != 0) {
 		pthread_mutex_destroy(&cd->sidechain_mutex);
 		blog(LOG_ERROR, "Failed to create mutex");
 		bfree(cd);
@@ -383,27 +389,31 @@ static void *ducker_create(obs_data_t *settings, obs_source_t *filter)
 }
 
 static struct obs_audio_data *ducker_filter_audio(void *data,
-	struct obs_audio_data *audio)
+						  struct obs_audio_data *audio)
 {
 	struct ducker_data *cd = data;
 
 	const float ratio = cd->ratio;
-	const float threshold = cd->threshold_mul;
-	const float close_threshold = cd->close_threshold_mul;
-	const float open_threshold = cd->open_threshold_mul;
+	const float threshold_mul = cd->threshold_mul;
+	const float close_threshold_mul = cd->close_threshold_mul;
+	const float open_threshold_mul = cd->open_threshold_mul;
+	const float threshold_db = cd->threshold_db;
+	const float close_threshold_db = cd->close_threshold_db;
+	const float open_threshold_db = cd->open_threshold_db;
 	const uint32_t sample_rate = cd->sample_rate;
 	const float release_rate = cd->release_rate;
 	const float attack_rate = cd->attack_rate;
-	const float hold_time = cd->hold_time_s;	
+	const float hold_time = cd->hold_time_s;
 	const float sample_period_s = cd->sample_period_s;
-	const float limiter_threshold = cd->limiter_threshold_mul;
+	const float limiter_threshold_mul = cd->limiter_threshold_mul;
+	const float limiter_threshold_db = cd->limiter_threshold_db;
+	const float slope = cd->slope;
 
 	const uint32_t num_samples = audio->frames;
 	if (num_samples == 0)
 		return audio;
 
-	if (cd->audio_buf_len < num_samples)
-	{
+	if (cd->audio_buf_len < num_samples) {
 		resize_env_buffer(cd, num_samples);
 	}
 
@@ -411,72 +421,89 @@ static struct obs_audio_data *ducker_filter_audio(void *data,
 	obs_weak_source_t *weak_sidechain = cd->weak_sidechain;
 	pthread_mutex_unlock(&cd->sidechain_update_mutex);
 
-	float **adata = (float**)audio->data;
+	float **adata = (float **)audio->data;
 	float **sidechain_buf = cd->sidechain_buf;
 
-	if (weak_sidechain)
-	{
+	if (weak_sidechain) {
 		get_sidechain_data(cd, num_samples);
 
-		const size_t channels = cd->num_channels;
-		for (uint32_t i = 0; i < num_samples; ++i)
-		{
-			float cur_level = fabsf(adata[0][i]);
-			float cur_sc_level = fabsf(sidechain_buf[0][i]);
+		memset(cd->envelope_buf, 0,
+		       num_samples * sizeof(cd->envelope_buf[0]));
+		const float attack_gain = cd->attack_gain;
+		const float release_gain = cd->release_gain;
+		for (size_t chan = 0; chan < cd->num_channels; ++chan) {
+			if (!adata[chan])
+				continue;
 
-			for (size_t j = 0; j < channels; j++)
-			{
-				cur_level = fmaxf(cur_level, fabsf(adata[j][i]));
-				cur_sc_level = fmaxf(cur_sc_level, fabsf(sidechain_buf[j][i]));
+			float *envelope_buf = cd->envelope_buf;
+			float env = cd->envelope;
+			for (uint32_t i = 0; i < num_samples; ++i) {
+				const float env_in = fabsf(adata[chan][i]);
+				if (env < env_in) {
+					env = env_in +
+					      attack_gain * (env - env_in);
+				} else {
+					env = env_in +
+					      release_gain * (env - env_in);
+				}
+				envelope_buf[i] = fmaxf(envelope_buf[i], env);
+			}
+		}
+		cd->envelope = cd->envelope_buf[num_samples - 1];
+
+		const size_t channels = cd->num_channels;
+		for (uint32_t i = 0; i < num_samples; ++i) {
+			float cur_level_mul = fabsf(cd->envelope_buf[i]);
+			float cur_sc_level_mul = fabsf(sidechain_buf[0][i]);
+
+			for (size_t j = 0; j < channels; j++) {
+				cur_sc_level_mul =
+					fmaxf(cur_sc_level_mul,
+					      fabsf(sidechain_buf[j][i]));
 			}
 
-			
+			float cur_level_db = mul_to_db(cur_level_mul);
+			float cur_sc_level_db = mul_to_db(cur_sc_level_mul);
 
-			if (cur_sc_level > open_threshold)
-			{
+			if (cur_sc_level_db > open_threshold_db) {
 				cd->isOpen = true;
 				cd->held_time_s = 0.0f;
 
-			} else if (cur_sc_level < close_threshold)
-			{
+			} else if (cur_sc_level_db < close_threshold_db) {
 				cd->isOpen = false;
-				
 			}
 
 			//cd->level = fmaxf(cd->level, cur_sc_level) - decay_rate;
 
-			if (!cd->isOpen)
-			{
+			if (!cd->isOpen) {
 
-				if (cd->held_time_s < hold_time)
-				{
+				if (cd->held_time_s < hold_time) {
 					cd->held_time_s += sample_period_s;
-					cd->gate = fminf(1.0f,
-						cd->gate + attack_rate);
+					cd->gate = fminf(
+						1.0f, cd->gate + attack_rate);
+				} else {
+					cd->gate = fmaxf(
+						0.0f, cd->gate - release_rate);
 				}
-				else
-				{
-					cd->gate = fmaxf(0.0f,
-						cd->gate - release_rate);
-				}
+			} else {
+				cd->gate = fminf(1.0f, cd->gate + attack_rate);
 			}
-			else
-			{
-				cd->gate = fminf(1.0f,
-					cd->gate + attack_rate);
-			}
-			float cur_level_db = mul_to_db(cur_level);
-			float db_Delta = fmaxf(0.0f, cur_level_db - mul_to_db(threshold));
-			float gain_reduction = fmaxf( db_Delta - ( db_Delta / ratio), cur_level_db - mul_to_db(limiter_threshold));
+
+			float db_Delta = threshold_db - cur_level_db;
+			float gain_reduction = cd->slope * db_Delta;
+			gain_reduction =
+				fminf(gain_reduction,
+				      limiter_threshold_db - cur_level_db);
+
 			gain_reduction *= cd->gate;
-			
-			gain_reduction = gain_reduction > 0 ? (1.0f / db_to_mul(gain_reduction)) : 1.0f;
-			
-			for (size_t c = 0; c < channels; c++)
-				adata[c][i] *= gain_reduction;
+			gain_reduction = db_to_mul(fminf(0, gain_reduction));
 
+			for (size_t c = 0; c < cd->num_channels; ++c) {
+				if (adata[c]) {
+					adata[c][i] *= gain_reduction;
+				}
+			}
 		}
-
 	}
 	return audio;
 }
@@ -488,12 +515,10 @@ static void ducker_tick(void *data, float seconds)
 
 	pthread_mutex_lock(&cd->sidechain_update_mutex);
 
-	if (cd->sidechain_name && !cd->weak_sidechain)
-	{
+	if (cd->sidechain_name && !cd->weak_sidechain) {
 		uint64_t t = os_gettime_ns();
 
-		if (t - cd->sidechain_check_time > 3000000000)
-		{
+		if (t - cd->sidechain_check_time > 3000000000) {
 			new_name = bstrdup(cd->sidechain_name);
 			cd->sidechain_check_time = t;
 		}
@@ -501,28 +526,27 @@ static void ducker_tick(void *data, float seconds)
 
 	pthread_mutex_unlock(&cd->sidechain_update_mutex);
 
-	if (new_name)
-	{
-		obs_source_t *sidechain = new_name && *new_name ?
-			obs_get_source_by_name(new_name) : NULL;
-		obs_weak_source_t *weak_sidechain = sidechain ?
-			obs_source_get_weak_source(sidechain) : NULL;
+	if (new_name) {
+		obs_source_t *sidechain =
+			new_name && *new_name ? obs_get_source_by_name(new_name)
+					      : NULL;
+		obs_weak_source_t *weak_sidechain =
+			sidechain ? obs_source_get_weak_source(sidechain)
+				  : NULL;
 
 		pthread_mutex_lock(&cd->sidechain_update_mutex);
 
 		if (cd->sidechain_name &&
-			strcmp(cd->sidechain_name, new_name) == 0)
-		{
+		    strcmp(cd->sidechain_name, new_name) == 0) {
 			cd->weak_sidechain = weak_sidechain;
 			weak_sidechain = NULL;
 		}
 
 		pthread_mutex_unlock(&cd->sidechain_update_mutex);
 
-		if (sidechain)
-		{
-			obs_source_add_audio_capture_callback(sidechain,
-				sidechain_capture, cd);
+		if (sidechain) {
+			obs_source_add_audio_capture_callback(
+				sidechain, sidechain_capture, cd);
 
 			obs_weak_source_release(weak_sidechain);
 			obs_source_release(sidechain);
@@ -553,36 +577,40 @@ static obs_properties_t *ducker_properties(void *data)
 	obs_properties_t *props = obs_properties_create();
 	obs_source_t *parent = NULL;
 
-
 	if (cd)
 		parent = obs_filter_get_parent(cd->context);
 
-	obs_properties_add_float_slider(props, S_RATIO,
-		TEXT_RATIO, MIN_RATIO, MAX_RATIO, 0.10);
-	obs_properties_add_float_slider(props, S_THRESHOLD,
-		TEXT_THRESHOLD, MIN_THRESHOLD_DB, MAX_THRESHOLD_DB, 0.1);
+	obs_properties_add_float_slider(props, S_RATIO, TEXT_RATIO, MIN_RATIO,
+					MAX_RATIO, 0.10);
+	obs_properties_add_float_slider(props, S_THRESHOLD, TEXT_THRESHOLD,
+					MIN_THRESHOLD_DB, MAX_THRESHOLD_DB,
+					0.1);
 	obs_properties_add_float_slider(props, S_LIMITER_THRESHOLD,
-		TEXT_LIMITER_THRESHOLD, MIN_THRESHOLD_DB, MAX_THRESHOLD_DB, 0.1);
-	obs_properties_add_int_slider(props, S_ATTACK_TIME,
-		TEXT_ATTACK_TIME, MIN_ATK_HLD_RLS_MS, MAX_ATK_MS, 1);
-	obs_properties_add_int_slider(props, S_HOLD_TIME,
-		TEXT_HOLD_TIME, MIN_ATK_HLD_RLS_MS, MAX_RLS_HLD_MS, 1);
-	obs_properties_add_int_slider(props, S_RELEASE_TIME,
-		TEXT_RELEASE_TIME, MIN_ATK_HLD_RLS_MS, MAX_RLS_HLD_MS, 1);
+					TEXT_LIMITER_THRESHOLD,
+					MIN_THRESHOLD_DB, MAX_THRESHOLD_DB,
+					0.1);
+	obs_properties_add_int_slider(props, S_ATTACK_TIME, TEXT_ATTACK_TIME,
+				      MIN_ATK_HLD_RLS_MS, MAX_ATK_MS, 1);
+	obs_properties_add_int_slider(props, S_HOLD_TIME, TEXT_HOLD_TIME,
+				      MIN_ATK_HLD_RLS_MS, MAX_RLS_HLD_MS, 1);
+	obs_properties_add_int_slider(props, S_RELEASE_TIME, TEXT_RELEASE_TIME,
+				      MIN_ATK_HLD_RLS_MS, MAX_RLS_HLD_MS, 1);
 
-	obs_property_t *sources = obs_properties_add_list(props,
-		S_DUCKING_SOURCE, TEXT_DUCKING_SOURCE,
+	obs_property_t *sources = obs_properties_add_list(
+		props, S_DUCKING_SOURCE, TEXT_DUCKING_SOURCE,
 		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
 	obs_property_list_add_string(sources, obs_module_text("None"), "none");
 
-	struct sidechain_prop_info info = { sources, parent };
+	struct sidechain_prop_info info = {sources, parent};
 	obs_enum_sources(add_sources, &info);
 
 	obs_properties_add_float_slider(props, S_OPEN_THRESHOLD,
-		TEXT_OPEN_THRESHOLD, MIN_THRESHOLD_DB, MAX_THRESHOLD_DB, 0.1);
+					TEXT_OPEN_THRESHOLD, MIN_THRESHOLD_DB,
+					MAX_THRESHOLD_DB, 0.1);
 	obs_properties_add_float_slider(props, S_CLOSE_THRESHOLD,
-		TEXT_CLOSE_THRESHOLD, MIN_THRESHOLD_DB, MAX_THRESHOLD_DB, 0.1);
+					TEXT_CLOSE_THRESHOLD, MIN_THRESHOLD_DB,
+					MAX_THRESHOLD_DB, 0.1);
 
 	UNUSED_PARAMETER(data);
 	return props;
