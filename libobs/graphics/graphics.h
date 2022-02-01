@@ -73,6 +73,10 @@ enum gs_color_format {
 	GS_DXT3,
 	GS_DXT5,
 	GS_R8G8,
+	GS_RGBA_UNORM,
+	GS_BGRX_UNORM,
+	GS_BGRA_UNORM,
+	GS_RG16,
 };
 
 enum gs_zstencil_format {
@@ -106,6 +110,14 @@ enum gs_blend_type {
 	GS_BLEND_DSTALPHA,
 	GS_BLEND_INVDSTALPHA,
 	GS_BLEND_SRCALPHASAT,
+};
+
+enum gs_blend_op_type {
+	GS_BLEND_OP_ADD,
+	GS_BLEND_OP_SUBTRACT,
+	GS_BLEND_OP_REVERSE_SUBTRACT,
+	GS_BLEND_OP_MIN,
+	GS_BLEND_OP_MAX
 };
 
 enum gs_depth_test {
@@ -167,6 +179,12 @@ enum gs_texture_type {
 	GS_TEXTURE_2D,
 	GS_TEXTURE_3D,
 	GS_TEXTURE_CUBE,
+};
+
+struct gs_device_loss {
+	void (*device_loss_release)(void *data);
+	void (*device_loss_rebuild)(void *device, void *data);
+	void *data;
 };
 
 struct gs_monitor_info {
@@ -247,6 +265,7 @@ struct gs_index_buffer;
 struct gs_sampler_state;
 struct gs_shader;
 struct gs_swap_chain;
+struct gs_timer;
 struct gs_texrender;
 struct gs_shader_param;
 struct gs_effect;
@@ -263,6 +282,8 @@ typedef struct gs_vertex_buffer gs_vertbuffer_t;
 typedef struct gs_index_buffer gs_indexbuffer_t;
 typedef struct gs_sampler_state gs_samplerstate_t;
 typedef struct gs_swap_chain gs_swapchain_t;
+typedef struct gs_timer gs_timer_t;
+typedef struct gs_timer_range gs_timer_range_t;
 typedef struct gs_texture_render gs_texrender_t;
 typedef struct gs_shader gs_shader_t;
 typedef struct gs_shader_param gs_sparam_t;
@@ -291,6 +312,11 @@ enum gs_shader_param_type {
 	GS_SHADER_PARAM_INT4,
 	GS_SHADER_PARAM_MATRIX4X4,
 	GS_SHADER_PARAM_TEXTURE,
+};
+
+struct gs_shader_texture {
+	gs_texture_t *tex;
+	bool srgb;
 };
 
 #ifndef SWIG
@@ -414,6 +440,7 @@ EXPORT void gs_effect_set_vec2(gs_eparam_t *param, const struct vec2 *val);
 EXPORT void gs_effect_set_vec3(gs_eparam_t *param, const struct vec3 *val);
 EXPORT void gs_effect_set_vec4(gs_eparam_t *param, const struct vec4 *val);
 EXPORT void gs_effect_set_texture(gs_eparam_t *param, gs_texture_t *val);
+EXPORT void gs_effect_set_texture_srgb(gs_eparam_t *param, gs_texture_t *val);
 EXPORT void gs_effect_set_val(gs_eparam_t *param, const void *val, size_t size);
 EXPORT void gs_effect_set_default(gs_eparam_t *param);
 EXPORT size_t gs_effect_get_val_size(gs_eparam_t *param);
@@ -497,6 +524,7 @@ EXPORT void gs_destroy(graphics_t *graphics);
 EXPORT void gs_enter_context(graphics_t *graphics);
 EXPORT void gs_leave_context(void);
 EXPORT graphics_t *gs_get_context(void);
+EXPORT void *gs_get_device_obj(void);
 
 EXPORT void gs_matrix_push(void);
 EXPORT void gs_matrix_pop(void);
@@ -540,10 +568,19 @@ EXPORT gs_shader_t *gs_vertexshader_create_from_file(const char *file,
 EXPORT gs_shader_t *gs_pixelshader_create_from_file(const char *file,
 						    char **error_string);
 
+enum gs_image_alpha_mode {
+	GS_IMAGE_ALPHA_STRAIGHT,
+	GS_IMAGE_ALPHA_PREMULTIPLY_SRGB,
+	GS_IMAGE_ALPHA_PREMULTIPLY,
+};
+
 EXPORT gs_texture_t *gs_texture_create_from_file(const char *file);
 EXPORT uint8_t *gs_create_texture_file_data(const char *file,
 					    enum gs_color_format *format,
 					    uint32_t *cx, uint32_t *cy);
+EXPORT uint8_t *gs_create_texture_file_data2(
+	const char *file, enum gs_image_alpha_mode alpha_mode,
+	enum gs_color_format *format, uint32_t *cx, uint32_t *cy);
 
 #define GS_FLIP_U (1 << 0)
 #define GS_FLIP_V (1 << 1)
@@ -633,6 +670,9 @@ EXPORT gs_indexbuffer_t *gs_indexbuffer_create(enum gs_index_type type,
 					       void *indices, size_t num,
 					       uint32_t flags);
 
+EXPORT gs_timer_t *gs_timer_create();
+EXPORT gs_timer_range_t *gs_timer_range_create();
+
 EXPORT enum gs_texture_type gs_get_texture_type(const gs_texture_t *texture);
 
 EXPORT void gs_load_vertexbuffer(gs_vertbuffer_t *vertbuffer);
@@ -654,6 +694,12 @@ EXPORT void gs_set_render_target(gs_texture_t *tex, gs_zstencil_t *zstencil);
 EXPORT void gs_set_cube_render_target(gs_texture_t *cubetex, int side,
 				      gs_zstencil_t *zstencil);
 
+EXPORT void gs_enable_framebuffer_srgb(bool enable);
+EXPORT bool gs_framebuffer_srgb_enabled(void);
+
+EXPORT bool gs_get_linear_srgb(void);
+EXPORT bool gs_set_linear_srgb(bool linear_srgb);
+
 EXPORT void gs_copy_texture(gs_texture_t *dst, gs_texture_t *src);
 EXPORT void gs_copy_texture_region(gs_texture_t *dst, uint32_t dst_x,
 				   uint32_t dst_y, gs_texture_t *src,
@@ -661,6 +707,7 @@ EXPORT void gs_copy_texture_region(gs_texture_t *dst, uint32_t dst_x,
 				   uint32_t src_w, uint32_t src_h);
 EXPORT void gs_stage_texture(gs_stagesurf_t *dst, gs_texture_t *src);
 
+EXPORT void gs_begin_frame(void);
 EXPORT void gs_begin_scene(void);
 EXPORT void gs_draw(enum gs_draw_mode draw_mode, uint32_t start_vert,
 		    uint32_t num_verts);
@@ -690,6 +737,8 @@ EXPORT void gs_blend_function_separate(enum gs_blend_type src_c,
 				       enum gs_blend_type dest_c,
 				       enum gs_blend_type src_a,
 				       enum gs_blend_type dest_a);
+EXPORT void gs_blend_op(enum gs_blend_op_type op);
+
 EXPORT void gs_depth_function(enum gs_depth_test test);
 
 EXPORT void gs_stencil_function(enum gs_stencil_side side,
@@ -773,6 +822,16 @@ gs_indexbuffer_get_num_indices(const gs_indexbuffer_t *indexbuffer);
 EXPORT enum gs_index_type
 gs_indexbuffer_get_type(const gs_indexbuffer_t *indexbuffer);
 
+EXPORT void gs_timer_destroy(gs_timer_t *timer);
+EXPORT void gs_timer_begin(gs_timer_t *timer);
+EXPORT void gs_timer_end(gs_timer_t *timer);
+EXPORT bool gs_timer_get_data(gs_timer_t *timer, uint64_t *ticks);
+EXPORT void gs_timer_range_destroy(gs_timer_range_t *timer);
+EXPORT void gs_timer_range_begin(gs_timer_range_t *range);
+EXPORT void gs_timer_range_end(gs_timer_range_t *range);
+EXPORT bool gs_timer_range_get_data(gs_timer_range_t *range, bool *disjoint,
+				    uint64_t *frequency);
+
 EXPORT bool gs_nv12_available(void);
 
 #define GS_USE_DEBUG_MARKERS 0
@@ -807,6 +866,8 @@ EXPORT void gs_debug_marker_end(void);
  * from shared surface resources */
 EXPORT gs_texture_t *gs_texture_create_from_iosurface(void *iosurf);
 EXPORT bool gs_texture_rebind_iosurface(gs_texture_t *texture, void *iosurf);
+EXPORT gs_texture_t *gs_texture_open_shared(uint32_t handle);
+EXPORT bool gs_shared_texture_available(void);
 
 #elif _WIN32
 
@@ -824,12 +885,16 @@ EXPORT bool
 gs_get_duplicator_monitor_info(int monitor_idx,
 			       struct gs_monitor_info *monitor_info);
 
+EXPORT int gs_duplicator_get_monitor_index(void *monitor);
+
 /** creates a windows 8+ output duplicator (monitor capture) */
 EXPORT gs_duplicator_t *gs_duplicator_create(int monitor_idx);
 EXPORT void gs_duplicator_destroy(gs_duplicator_t *duplicator);
 
 EXPORT bool gs_duplicator_update_frame(gs_duplicator_t *duplicator);
 EXPORT gs_texture_t *gs_duplicator_get_texture(gs_duplicator_t *duplicator);
+
+EXPORT uint32_t gs_get_adapter_count(void);
 
 /** creates a windows GDI-lockable texture */
 EXPORT gs_texture_t *gs_texture_create_gdi(uint32_t width, uint32_t height);
@@ -839,9 +904,12 @@ EXPORT void gs_texture_release_dc(gs_texture_t *gdi_tex);
 
 /** creates a windows shared texture from a texture handle */
 EXPORT gs_texture_t *gs_texture_open_shared(uint32_t handle);
+EXPORT gs_texture_t *gs_texture_open_nt_shared(uint32_t handle);
 
 #define GS_INVALID_HANDLE (uint32_t) - 1
 EXPORT uint32_t gs_texture_get_shared_handle(gs_texture_t *tex);
+
+EXPORT gs_texture_t *gs_texture_wrap_obj(void *obj);
 
 #define GS_WAIT_INFINITE (uint32_t) - 1
 
@@ -865,6 +933,30 @@ EXPORT bool gs_texture_create_nv12(gs_texture_t **tex_y, gs_texture_t **tex_uv,
 EXPORT gs_stagesurf_t *gs_stagesurface_create_nv12(uint32_t width,
 						   uint32_t height);
 
+EXPORT void gs_register_loss_callbacks(const struct gs_device_loss *callbacks);
+EXPORT void gs_unregister_loss_callbacks(void *data);
+
+#elif __linux__
+
+EXPORT gs_texture_t *gs_texture_create_from_dmabuf(
+	unsigned int width, unsigned int height, uint32_t drm_format,
+	enum gs_color_format color_format, uint32_t n_planes, const int *fds,
+	const uint32_t *strides, const uint32_t *offsets,
+	const uint64_t *modifiers);
+
+enum gs_dmabuf_flags {
+	GS_DMABUF_FLAG_NONE = 0,
+	GS_DMABUF_FLAG_IMPLICIT_MODIFIERS_SUPPORTED = (1 << 0),
+};
+
+EXPORT bool gs_query_dmabuf_capabilities(enum gs_dmabuf_flags *dmabuf_flags,
+					 uint32_t **drm_formats,
+					 size_t *n_formats);
+
+EXPORT bool gs_query_dmabuf_modifiers_for_format(uint32_t drm_format,
+						 uint64_t **modifiers,
+						 size_t *n_modifiers);
+
 #endif
 
 /* inline functions used by modules */
@@ -872,42 +964,34 @@ EXPORT gs_stagesurf_t *gs_stagesurface_create_nv12(uint32_t width,
 static inline uint32_t gs_get_format_bpp(enum gs_color_format format)
 {
 	switch (format) {
+	case GS_DXT1:
+		return 4;
 	case GS_A8:
-		return 8;
 	case GS_R8:
+	case GS_DXT3:
+	case GS_DXT5:
 		return 8;
+	case GS_R16:
+	case GS_R16F:
+	case GS_R8G8:
+		return 16;
 	case GS_RGBA:
-		return 32;
 	case GS_BGRX:
-		return 32;
 	case GS_BGRA:
-		return 32;
 	case GS_R10G10B10A2:
+	case GS_RG16F:
+	case GS_R32F:
+	case GS_RGBA_UNORM:
+	case GS_BGRX_UNORM:
+	case GS_BGRA_UNORM:
+	case GS_RG16:
 		return 32;
 	case GS_RGBA16:
-		return 64;
-	case GS_R16:
-		return 16;
 	case GS_RGBA16F:
+	case GS_RG32F:
 		return 64;
 	case GS_RGBA32F:
 		return 128;
-	case GS_RG16F:
-		return 32;
-	case GS_RG32F:
-		return 64;
-	case GS_R16F:
-		return 16;
-	case GS_R32F:
-		return 32;
-	case GS_DXT1:
-		return 4;
-	case GS_DXT3:
-		return 8;
-	case GS_DXT5:
-		return 8;
-	case GS_R8G8:
-		return 16;
 	case GS_UNKNOWN:
 		return 0;
 	}
@@ -920,10 +1004,39 @@ static inline bool gs_is_compressed_format(enum gs_color_format format)
 	return (format == GS_DXT1 || format == GS_DXT3 || format == GS_DXT5);
 }
 
-static inline uint32_t gs_get_total_levels(uint32_t width, uint32_t height)
+static inline bool gs_is_srgb_format(enum gs_color_format format)
+{
+	switch (format) {
+	case GS_RGBA:
+	case GS_BGRX:
+	case GS_BGRA:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static inline enum gs_color_format
+gs_generalize_format(enum gs_color_format format)
+{
+	switch (format) {
+	case GS_RGBA_UNORM:
+		return GS_RGBA;
+	case GS_BGRX_UNORM:
+		return GS_BGRX;
+	case GS_BGRA_UNORM:
+		return GS_BGRA;
+	default:
+		return format;
+	}
+}
+
+static inline uint32_t gs_get_total_levels(uint32_t width, uint32_t height,
+					   uint32_t depth)
 {
 	uint32_t size = width > height ? width : height;
-	uint32_t num_levels = 0;
+	size = size > depth ? size : depth;
+	uint32_t num_levels = 1;
 
 	while (size > 1) {
 		size /= 2;

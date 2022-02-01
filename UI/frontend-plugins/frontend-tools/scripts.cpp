@@ -1,6 +1,8 @@
+#include "obs-module.h"
 #include "scripts.hpp"
 #include "frontend-tools-config.h"
 #include "../../properties-view.hpp"
+#include "../../qt-wrappers.hpp"
 
 #include <QFileDialog>
 #include <QPlainTextEdit>
@@ -13,6 +15,10 @@
 #include <QDialogButtonBox>
 #include <QResizeEvent>
 #include <QAction>
+#include <QMessageBox>
+#include <QMenu>
+#include <QUrl>
+#include <QDesktopServices>
 
 #include <obs.hpp>
 #include <obs-module.h>
@@ -192,6 +198,7 @@ ScriptsTool::ScriptsTool() : QWidget(nullptr), ui(new Ui_ScriptsTool)
 #else
 	delete ui->pythonSettingsTab;
 	ui->pythonSettingsTab = nullptr;
+	ui->tabWidget->setStyleSheet("QTabWidget::pane {border: 0;}");
 #endif
 
 	delete propertiesView;
@@ -199,10 +206,19 @@ ScriptsTool::ScriptsTool() : QWidget(nullptr), ui(new Ui_ScriptsTool)
 	propertiesView->setSizePolicy(QSizePolicy::Expanding,
 				      QSizePolicy::Expanding);
 	ui->propertiesLayout->addWidget(propertiesView);
+
+	config_t *global_config = obs_frontend_get_global_config();
+	int row =
+		config_get_int(global_config, "scripts-tool", "prevScriptRow");
+	ui->scripts->setCurrentRow(row);
 }
 
 ScriptsTool::~ScriptsTool()
 {
+	config_t *global_config = obs_frontend_get_global_config();
+	config_set_int(global_config, "scripts-tool", "prevScriptRow",
+		       ui->scripts->currentRow());
+
 	delete ui;
 }
 
@@ -227,8 +243,7 @@ void ScriptsTool::ReloadScript(const char *path)
 		if (strcmp(script_path, path) == 0) {
 			obs_script_reload(script);
 
-			OBSData settings = obs_data_create();
-			obs_data_release(settings);
+			OBSDataAutoRelease settings = obs_data_create();
 
 			obs_properties_t *prop =
 				obs_script_get_properties(script);
@@ -251,6 +266,22 @@ void ScriptsTool::RefreshLists()
 		QListWidgetItem *item = new QListWidgetItem(script_file);
 		item->setData(Qt::UserRole, QString(script_path));
 		ui->scripts->addItem(item);
+	}
+}
+
+void ScriptsTool::SetScriptDefaults(const char *path)
+{
+	for (OBSScript &script : scriptData->scripts) {
+		const char *script_path = obs_script_get_path(script);
+		if (strcmp(script_path, path) == 0) {
+			OBSDataAutoRelease settings =
+				obs_script_get_settings(script);
+			obs_data_clear(settings);
+
+			obs_script_update(script, nullptr);
+			on_reloadScripts_clicked();
+			break;
+		}
 	}
 }
 
@@ -293,19 +324,16 @@ void ScriptsTool::on_addScripts_clicked()
 		lastBrowsedDir = baseScriptPath;
 	}
 
-	QFileDialog dlg(this, obs_module_text("AddScripts"));
-	dlg.setFileMode(QFileDialog::ExistingFiles);
-	dlg.setDirectory(QDir(lastBrowsedDir.c_str()));
-	dlg.setNameFilter(filter);
-	dlg.exec();
-
-	QStringList files = dlg.selectedFiles();
+	QStringList files = OpenFiles(this,
+				      QT_UTF8(obs_module_text("AddScripts")),
+				      QT_UTF8(lastBrowsedDir.c_str()), filter);
 	if (!files.count())
 		return;
 
-	lastBrowsedDir = dlg.directory().path().toUtf8().constData();
-
 	for (const QString &file : files) {
+		lastBrowsedDir =
+			QFileInfo(file).absolutePath().toUtf8().constData();
+
 		QByteArray pathBytes = file.toUtf8();
 		const char *path = pathBytes.constData();
 
@@ -324,13 +352,14 @@ void ScriptsTool::on_addScripts_clicked()
 			item->setData(Qt::UserRole, QString(file));
 			ui->scripts->addItem(item);
 
-			OBSData settings = obs_data_create();
-			obs_data_release(settings);
+			OBSDataAutoRelease settings = obs_data_create();
 
 			obs_properties_t *prop =
 				obs_script_get_properties(script);
 			obs_properties_apply_settings(prop, settings);
 			obs_properties_destroy(prop);
+
+			ui->scripts->setCurrentItem(item);
 		}
 	}
 }
@@ -359,6 +388,53 @@ void ScriptsTool::on_reloadScripts_clicked()
 	on_scripts_currentRowChanged(ui->scripts->currentRow());
 }
 
+void ScriptsTool::OpenScriptParentDirectory()
+{
+	QList<QListWidgetItem *> items = ui->scripts->selectedItems();
+	for (QListWidgetItem *item : items) {
+		QDir dir(item->data(Qt::UserRole).toString());
+		dir.cdUp();
+		QDesktopServices::openUrl(
+			QUrl::fromLocalFile(dir.absolutePath()));
+	}
+}
+
+void ScriptsTool::on_scripts_customContextMenuRequested(const QPoint &pos)
+{
+
+	QListWidgetItem *item = ui->scripts->itemAt(pos);
+
+	QMenu popup(this);
+
+	obs_frontend_push_ui_translation(obs_module_get_string);
+
+	popup.addAction(tr("Add"), this, SLOT(on_addScripts_clicked()));
+
+	if (item) {
+		popup.addSeparator();
+		popup.addAction(obs_module_text("Reload"), this,
+				SLOT(on_reloadScripts_clicked()));
+		popup.addAction(obs_module_text("OpenFileLocation"), this,
+				SLOT(OpenScriptParentDirectory()));
+		popup.addSeparator();
+		popup.addAction(tr("Remove"), this,
+				SLOT(on_removeScripts_clicked()));
+	}
+	obs_frontend_pop_ui_translation();
+
+	popup.exec(QCursor::pos());
+}
+
+void ScriptsTool::on_editScript_clicked()
+{
+	int row = ui->scripts->currentRow();
+	if (row == -1)
+		return;
+	QUrl url = QUrl::fromLocalFile(
+		ui->scripts->item(row)->data(Qt::UserRole).toString());
+	QDesktopServices::openUrl(url);
+}
+
 void ScriptsTool::on_scriptLog_clicked()
 {
 	scriptLogWindow->show();
@@ -368,8 +444,8 @@ void ScriptsTool::on_scriptLog_clicked()
 void ScriptsTool::on_pythonPathBrowse_clicked()
 {
 	QString curPath = ui->pythonPath->text();
-	QString newPath = QFileDialog::getExistingDirectory(
-		this, ui->pythonPathLabel->text(), curPath);
+	QString newPath =
+		SelectDirectory(this, ui->pythonPathLabel->text(), curPath);
 
 	if (newPath.isEmpty())
 		return;
@@ -421,15 +497,58 @@ void ScriptsTool::on_scripts_currentRowChanged(int row)
 		return;
 	}
 
-	OBSData settings = obs_script_get_settings(script);
-	obs_data_release(settings);
+	OBSDataAutoRelease settings = obs_script_get_settings(script);
 
 	propertiesView = new OBSPropertiesView(
-		settings, script,
-		(PropertiesReloadCallback)obs_script_get_properties,
-		(PropertiesUpdateCallback)obs_script_update);
+		settings.Get(), script,
+		(PropertiesReloadCallback)obs_script_get_properties, nullptr,
+		(PropertiesVisualUpdateCb)obs_script_update);
 	ui->propertiesLayout->addWidget(propertiesView);
 	ui->description->setText(obs_script_get_description(script));
+}
+
+void ScriptsTool::on_defaults_clicked()
+{
+	QListWidgetItem *item = ui->scripts->currentItem();
+	if (!item)
+		return;
+
+	SetScriptDefaults(
+		item->data(Qt::UserRole).toString().toUtf8().constData());
+}
+
+void ScriptsTool::on_description_linkActivated(const QString &link)
+{
+	QUrl url(link, QUrl::StrictMode);
+	if (url.isValid() && (url.scheme().compare("http") == 0 ||
+			      url.scheme().compare("https") == 0)) {
+		QString msg(obs_module_text("ScriptDescriptionLink.Text"));
+		msg += "\n\n";
+		msg += QString(obs_module_text(
+				       "ScriptDescriptionLink.Text.Url"))
+			       .arg(link);
+
+		const char *open =
+			obs_module_text("ScriptDescriptionLink.OpenURL");
+
+		QMessageBox messageBox(this);
+		messageBox.setWindowTitle(open);
+		messageBox.setText(msg);
+
+		obs_frontend_push_ui_translation(obs_module_get_string);
+		QPushButton *yesButton =
+			messageBox.addButton(open, QMessageBox::YesRole);
+		QPushButton *noButton =
+			messageBox.addButton(tr("Cancel"), QMessageBox::NoRole);
+		obs_frontend_pop_ui_translation();
+		messageBox.setDefaultButton(yesButton);
+		messageBox.setEscapeButton(noButton);
+		messageBox.setIcon(QMessageBox::Question);
+		messageBox.exec();
+
+		if (messageBox.clickedButton() == yesButton)
+			QDesktopServices::openUrl(url);
+	}
 }
 
 /* ----------------------------------------------------------------- */
@@ -446,9 +565,15 @@ static void obs_event(enum obs_frontend_event event, void *)
 		delete scriptsWindow;
 		delete scriptLogWindow;
 
+		scriptData = nullptr;
+		scriptsWindow = nullptr;
+		scriptLogWindow = nullptr;
+
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP) {
-		scriptLogWindow->hide();
-		scriptLogWindow->Clear();
+		if (scriptLogWindow) {
+			scriptLogWindow->hide();
+			scriptLogWindow->Clear();
+		}
 
 		delete scriptData;
 		scriptData = new ScriptData;
@@ -457,30 +582,26 @@ static void obs_event(enum obs_frontend_event event, void *)
 
 static void load_script_data(obs_data_t *load_data, bool, void *)
 {
-	obs_data_array_t *array = obs_data_get_array(load_data, "scripts-tool");
+	OBSDataArrayAutoRelease array =
+		obs_data_get_array(load_data, "scripts-tool");
 
 	delete scriptData;
 	scriptData = new ScriptData;
 
 	size_t size = obs_data_array_count(array);
 	for (size_t i = 0; i < size; i++) {
-		obs_data_t *obj = obs_data_array_item(array, i);
+		OBSDataAutoRelease obj = obs_data_array_item(array, i);
 		const char *path = obs_data_get_string(obj, "path");
-		obs_data_t *settings = obs_data_get_obj(obj, "settings");
+		OBSDataAutoRelease settings = obs_data_get_obj(obj, "settings");
 
 		obs_script_t *script = obs_script_create(path, settings);
 		if (script) {
 			scriptData->scripts.emplace_back(script);
 		}
-
-		obs_data_release(settings);
-		obs_data_release(obj);
 	}
 
 	if (scriptsWindow)
 		scriptsWindow->RefreshLists();
-
-	obs_data_array_release(array);
 }
 
 static void save_script_data(obs_data_t *save_data, bool saving, void *)
@@ -488,23 +609,19 @@ static void save_script_data(obs_data_t *save_data, bool saving, void *)
 	if (!saving)
 		return;
 
-	obs_data_array_t *array = obs_data_array_create();
+	OBSDataArrayAutoRelease array = obs_data_array_create();
 
 	for (OBSScript &script : scriptData->scripts) {
 		const char *script_path = obs_script_get_path(script);
-		obs_data_t *settings = obs_script_save(script);
+		OBSDataAutoRelease settings = obs_script_save(script);
 
-		obs_data_t *obj = obs_data_create();
+		OBSDataAutoRelease obj = obs_data_create();
 		obs_data_set_string(obj, "path", script_path);
 		obs_data_set_obj(obj, "settings", settings);
 		obs_data_array_push_back(array, obj);
-		obs_data_release(obj);
-
-		obs_data_release(settings);
 	}
 
 	obs_data_set_array(save_data, "scripts-tool", array);
-	obs_data_array_release(array);
 }
 
 static void script_log(void *, obs_script_t *script, int log_level,

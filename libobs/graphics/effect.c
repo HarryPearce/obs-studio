@@ -129,7 +129,7 @@ void gs_technique_end(gs_technique_t *tech)
 	for (i = 0; i < effect->params.num; i++) {
 		struct gs_effect_param *param = params + i;
 
-		da_free(param->cur_val);
+		da_resize(param->cur_val, 0);
 		param->changed = false;
 		if (param->next_sampler)
 			param->next_sampler = NULL;
@@ -486,7 +486,18 @@ void gs_effect_set_color(gs_eparam_t *param, uint32_t argb)
 
 void gs_effect_set_texture(gs_eparam_t *param, gs_texture_t *val)
 {
-	effect_setval_inline(param, &val, sizeof(gs_texture_t *));
+	struct gs_shader_texture shader_tex;
+	shader_tex.tex = val;
+	shader_tex.srgb = false;
+	effect_setval_inline(param, &shader_tex, sizeof(shader_tex));
+}
+
+void gs_effect_set_texture_srgb(gs_eparam_t *param, gs_texture_t *val)
+{
+	struct gs_shader_texture shader_tex;
+	shader_tex.tex = val;
+	shader_tex.srgb = true;
+	effect_setval_inline(param, &shader_tex, sizeof(shader_tex));
 }
 
 void gs_effect_set_val(gs_eparam_t *param, const void *val, size_t size)

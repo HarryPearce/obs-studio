@@ -32,6 +32,12 @@
 #define SO_EXT ".dylib"
 #endif
 
+#ifdef __APPLE__
+#define PYTHON_LIB_SUBDIR "lib/"
+#else
+#define PYTHON_LIB_SUBDIR ""
+#endif
+
 bool import_python(const char *python_path)
 {
 	struct dstr lib_path;
@@ -44,7 +50,7 @@ bool import_python(const char *python_path)
 	dstr_init_copy(&lib_path, python_path);
 	dstr_replace(&lib_path, "\\", "/");
 	if (!dstr_is_empty(&lib_path)) {
-		dstr_cat(&lib_path, "/");
+		dstr_cat(&lib_path, "/" PYTHON_LIB_SUBDIR);
 	}
 	dstr_cat(&lib_path, PYTHON_LIB SO_EXT);
 
@@ -75,6 +81,7 @@ bool import_python(const char *python_path)
 	IMPORT_FUNC(PyUnicode_FromFormat);
 	IMPORT_FUNC(PyUnicode_Concat);
 	IMPORT_FUNC(PyLong_FromVoidPtr);
+	IMPORT_FUNC(PyLong_FromLong);
 	IMPORT_FUNC(PyBool_FromLong);
 	IMPORT_FUNC(PyGILState_Ensure);
 	IMPORT_FUNC(PyGILState_GetThisThreadState);
@@ -102,6 +109,7 @@ bool import_python(const char *python_path)
 	IMPORT_FUNC(PyExc_RuntimeError);
 	IMPORT_FUNC(PyObject_GetAttr);
 	IMPORT_FUNC(PyUnicode_FromString);
+	IMPORT_FUNC(PyDict_New);
 	IMPORT_FUNC(PyDict_GetItemString);
 	IMPORT_FUNC(PyDict_SetItemString);
 	IMPORT_FUNC(PyCFunction_NewEx);
@@ -134,6 +142,14 @@ bool import_python(const char *python_path)
 	IMPORT_FUNC(PyLong_FromUnsignedLongLong);
 	IMPORT_FUNC(PyArg_VaParse);
 	IMPORT_FUNC(_Py_NoneStruct);
+	IMPORT_FUNC(PyTuple_New);
+
+#if defined(Py_DEBUG) || PY_VERSION_HEX >= 0x030900b0
+	IMPORT_FUNC(_Py_Dealloc);
+#endif
+#if PY_VERSION_HEX >= 0x030900b0
+	IMPORT_FUNC(PyType_GetFlags);
+#endif
 
 #undef IMPORT_FUNC
 

@@ -9,16 +9,13 @@
 #include <sstream>
 
 #include <obs-app.hpp>
+#include "window-dock-browser.hpp"
 #include "window-basic-main.hpp"
 #include "remote-text.hpp"
 #include "ui-config.h"
 #include "obf.h"
-#include <browser-panel.hpp>
 
 using namespace json11;
-
-extern QCef *cef;
-extern QCefCookieManager *panel_cookies;
 
 /* ------------------------------------------------------------------------- */
 
@@ -61,8 +58,8 @@ try {
 
 	auto func = [&]() {
 		success = GetRemoteFile(RESTREAM_STREAMKEY_URL, output, error,
-					nullptr, "application/json", nullptr,
-					headers, nullptr, 5);
+					nullptr, "application/json", "",
+					nullptr, headers, nullptr, 5);
 	};
 
 	ExecThreadedWithoutBlocking(
@@ -117,13 +114,6 @@ bool RestreamAuth::LoadInternal()
 	return OAuthStreamKey::LoadInternal();
 }
 
-class RestreamWidget : public QDockWidget {
-public:
-	inline RestreamWidget() : QDockWidget() {}
-
-	QScopedPointer<QCefWidget> widget;
-};
-
 void RestreamAuth::LoadUI()
 {
 	if (uiLoaded)
@@ -145,15 +135,15 @@ void RestreamAuth::LoadUI()
 	QSize size = main->frameSize();
 	QPoint pos = main->pos();
 
-	chat.reset(new RestreamWidget());
+	chat.reset(new BrowserDock());
 	chat->setObjectName("restreamChat");
 	chat->resize(420, 600);
 	chat->setMinimumSize(200, 300);
 	chat->setWindowTitle(QTStr("Auth.Chat"));
 	chat->setAllowedAreas(Qt::AllDockWidgetAreas);
 
-	browser = cef->create_widget(nullptr, url, panel_cookies);
-	chat->setWidget(browser);
+	browser = cef->create_widget(chat.data(), url, panel_cookies);
+	chat->SetWidget(browser);
 
 	main->addDockWidget(Qt::RightDockWidgetArea, chat.data());
 	chatMenu.reset(main->AddDockWidget(chat.data()));
@@ -162,29 +152,50 @@ void RestreamAuth::LoadUI()
 
 	url = "https://restream.io/titles/embed";
 
-	info.reset(new RestreamWidget());
+	info.reset(new BrowserDock());
 	info->setObjectName("restreamInfo");
 	info->resize(410, 600);
 	info->setMinimumSize(200, 150);
 	info->setWindowTitle(QTStr("Auth.StreamInfo"));
 	info->setAllowedAreas(Qt::AllDockWidgetAreas);
 
-	browser = cef->create_widget(nullptr, url, panel_cookies);
-	info->setWidget(browser);
+	browser = cef->create_widget(info.data(), url, panel_cookies);
+	info->SetWidget(browser);
 
-	main->addDockWidget(Qt::RightDockWidgetArea, info.data());
+	main->addDockWidget(Qt::LeftDockWidgetArea, info.data());
 	infoMenu.reset(main->AddDockWidget(info.data()));
+
+	/* ----------------------------------- */
+
+	url = "https://restream.io/channel/embed";
+
+	channels.reset(new BrowserDock());
+	channels->setObjectName("restreamChannel");
+	channels->resize(410, 600);
+	channels->setMinimumSize(410, 300);
+	channels->setWindowTitle(QTStr("RestreamAuth.Channels"));
+	channels->setAllowedAreas(Qt::AllDockWidgetAreas);
+
+	browser = cef->create_widget(channels.data(), url, panel_cookies);
+	channels->SetWidget(browser);
+
+	main->addDockWidget(Qt::LeftDockWidgetArea, channels.data());
+	channelMenu.reset(main->AddDockWidget(channels.data()));
 
 	/* ----------------------------------- */
 
 	chat->setFloating(true);
 	info->setFloating(true);
-	chat->move(pos.x() + size.width() - chat->width() - 50, pos.y() + 50);
-	info->move(pos.x() + 40, pos.y() + 50);
+	channels->setFloating(true);
+
+	chat->move(pos.x() + size.width() - chat->width() - 30, pos.y() + 60);
+	info->move(pos.x() + 20, pos.y() + 60);
+	channels->move(pos.x() + 20 + info->width() + 10, pos.y() + 60);
 
 	if (firstLoad) {
 		chat->setVisible(true);
 		info->setVisible(true);
+		channels->setVisible(true);
 	} else {
 		const char *dockStateStr = config_get_string(
 			main->Config(), service(), "DockState");
@@ -214,7 +225,7 @@ bool RestreamAuth::RetryLogin()
 			QT_TO_UTF8(login.GetCode()), true);
 }
 
-std::shared_ptr<Auth> RestreamAuth::Login(QWidget *parent)
+std::shared_ptr<Auth> RestreamAuth::Login(QWidget *parent, const std::string &)
 {
 	OAuthLogin login(parent, RESTREAM_AUTH_URL, false);
 	cef->add_popup_whitelist_url("about:blank", &login);

@@ -70,13 +70,16 @@ struct qsv_rate_control_info {
 };
 
 static const struct qsv_rate_control_info qsv_ratecontrols[] = {
-	{"CBR", false},   {"VBR", false},  {"VCM", true},
-	{"CQP", false},   {"AVBR", false}, {"ICQ", true},
-	{"LA_ICQ", true}, {"LA", true},    {0, false}};
+	{"CBR", false},   {"VBR", false}, {"VCM", true},    {"CQP", false},
+	{"AVBR", false},  {"ICQ", true},  {"LA_ICQ", true}, {"LA_CBR", true},
+	{"LA_VBR", true}, {0, false}};
 static const char *const qsv_profile_names[] = {"high", "main", "baseline", 0};
-static const char *const qsv_usage_names[] = {"quality", "balanced", "speed",
-					      0};
-
+static const char *const qsv_usage_names[] = {"quality",  "balanced", "speed",
+					      "veryslow", "slower",   "slow",
+					      "medium",   "fast",     "faster",
+					      "veryfast", 0};
+static const char *const qsv_latency_names[] = {"ultra-low", "low", "normal",
+						0};
 typedef struct qsv_t qsv_t;
 
 typedef struct {
@@ -100,6 +103,8 @@ typedef struct {
 	mfxU16 nKeyIntSec;
 	mfxU16 nbFrames;
 	mfxU16 nICQQuality;
+	bool bMBBRC;
+	bool bCQM;
 } qsv_param_t;
 
 enum qsv_cpu_platform {
@@ -110,6 +115,13 @@ enum qsv_cpu_platform {
 	QSV_CPU_PLATFORM_SLM,
 	QSV_CPU_PLATFORM_CHT,
 	QSV_CPU_PLATFORM_HSW,
+	QSV_CPU_PLATFORM_BDW,
+	QSV_CPU_PLATFORM_SKL,
+	QSV_CPU_PLATFORM_APL,
+	QSV_CPU_PLATFORM_KBL,
+	QSV_CPU_PLATFORM_GLK,
+	QSV_CPU_PLATFORM_CNL,
+	QSV_CPU_PLATFORM_ICL,
 	QSV_CPU_PLATFORM_INTEL
 };
 
@@ -123,9 +135,12 @@ void qsv_encoder_version(unsigned short *major, unsigned short *minor);
 qsv_t *qsv_encoder_open(qsv_param_t *);
 int qsv_encoder_encode(qsv_t *, uint64_t, uint8_t *, uint8_t *, uint32_t,
 		       uint32_t, mfxBitstream **pBS);
+int qsv_encoder_encode_tex(qsv_t *, uint64_t, uint32_t, uint64_t, uint64_t *,
+			   mfxBitstream **pBS);
 int qsv_encoder_headers(qsv_t *, uint8_t **pSPS, uint8_t **pPPS,
 			uint16_t *pnSPS, uint16_t *pnPPS);
 enum qsv_cpu_platform qsv_get_cpu_platform();
+bool prefer_igpu_enc(int *iGPUIndex);
 
 #ifdef __cplusplus
 }

@@ -32,6 +32,7 @@
 
 class OBSBasic;
 class QAbstractButton;
+class QRadioButton;
 class QComboBox;
 class QCheckBox;
 class QLabel;
@@ -84,14 +85,20 @@ using OBSFFFormatDesc = std::unique_ptr<const ff_format_desc, OBSFFDeleter>;
 
 class OBSBasicSettings : public QDialog {
 	Q_OBJECT
-	Q_PROPERTY(QIcon generalIcon WRITE SetGeneralIcon NOTIFY SetGeneralIcon)
-	Q_PROPERTY(QIcon streamIcon WRITE SetStreamIcon NOTIFY SetStreamIcon)
-	Q_PROPERTY(QIcon outputIcon WRITE SetOutputIcon NOTIFY SetOutputIcon)
-	Q_PROPERTY(QIcon audioIcon WRITE SetAudioIcon NOTIFY SetAudioIcon)
-	Q_PROPERTY(QIcon videoIcon WRITE SetVideoIcon NOTIFY SetVideoIcon)
-	Q_PROPERTY(QIcon hotkeysIcon WRITE SetHotkeysIcon NOTIFY SetHotkeysIcon)
-	Q_PROPERTY(
-		QIcon advancedIcon WRITE SetAdvancedIcon NOTIFY SetAdvancedIcon)
+	Q_PROPERTY(QIcon generalIcon READ GetGeneralIcon WRITE SetGeneralIcon
+			   DESIGNABLE true)
+	Q_PROPERTY(QIcon streamIcon READ GetStreamIcon WRITE SetStreamIcon
+			   DESIGNABLE true)
+	Q_PROPERTY(QIcon outputIcon READ GetOutputIcon WRITE SetOutputIcon
+			   DESIGNABLE true)
+	Q_PROPERTY(QIcon audioIcon READ GetAudioIcon WRITE SetAudioIcon
+			   DESIGNABLE true)
+	Q_PROPERTY(QIcon videoIcon READ GetVideoIcon WRITE SetVideoIcon
+			   DESIGNABLE true)
+	Q_PROPERTY(QIcon hotkeysIcon READ GetHotkeysIcon WRITE SetHotkeysIcon
+			   DESIGNABLE true)
+	Q_PROPERTY(QIcon advancedIcon READ GetAdvancedIcon WRITE SetAdvancedIcon
+			   DESIGNABLE true)
 
 private:
 	OBSBasic *main;
@@ -109,9 +116,14 @@ private:
 	bool advancedChanged = false;
 	int pageIndex = 0;
 	bool loading = true;
+	bool forceAuthReload = false;
 	std::string savedTheme;
+	int sampleRateIndex = 0;
+	int channelIndex = 0;
 
 	int lastSimpleRecQualityIdx = 0;
+	int lastServiceIdx = -1;
+	int lastIgnoreRecommended = -1;
 	int lastChannelSetupIdx = 0;
 
 	OBSFFFormatDesc formats;
@@ -147,6 +159,14 @@ private:
 	uint32_t outputCX = 0;
 	uint32_t outputCY = 0;
 
+	QPointer<QCheckBox> simpleVodTrack;
+
+	QPointer<QCheckBox> vodTrackCheckbox;
+	QPointer<QWidget> vodTrackContainer;
+	QPointer<QRadioButton> vodTrack[MAX_AUDIO_MIXES];
+
+	QIcon hotkeyConflictIcon;
+
 	void SaveCombo(QComboBox *widget, const char *section,
 		       const char *value);
 	void SaveComboData(QComboBox *widget, const char *section,
@@ -160,6 +180,11 @@ private:
 	void SaveFormat(QComboBox *combo);
 	void SaveEncoder(QComboBox *combo, const char *section,
 			 const char *value);
+
+	bool ResFPSValid(obs_service_resolution *res_list, size_t res_count,
+			 int max_fps);
+	void ClosestResFPS(obs_service_resolution *res_list, size_t res_count,
+			   int max_fps, int &new_cx, int &new_cy, int &new_fps);
 
 	inline bool Changed() const
 	{
@@ -225,15 +250,27 @@ private:
 	void OnOAuthStreamKeyConnected();
 	void OnAuthConnected();
 	QString lastService;
+	int prevLangIndex;
+	bool prevBrowserAccel;
 private slots:
 	void UpdateServerList();
 	void UpdateKeyLink();
+	void UpdateVodTrackSetting();
+	void UpdateServiceRecommendations();
+	void RecreateOutputResolutionWidget();
+	void UpdateResFPSLimits();
+	void UpdateMoreInfoLink();
+	void DisplayEnforceWarning(bool checked);
 	void on_show_clicked();
 	void on_authPwShow_clicked();
 	void on_connectAccount_clicked();
 	void on_disconnectAccount_clicked();
 	void on_useStreamKey_clicked();
 	void on_useAuth_toggled();
+
+	void on_hotkeyFilterReset_clicked();
+	void on_hotkeyFilterSearch_textChanged(const QString text);
+	void on_hotkeyFilterInput_KeyChanged(obs_key_combination_t combo);
 
 private:
 	/* output */
@@ -255,7 +292,8 @@ private:
 
 	/* video */
 	void LoadRendererList();
-	void ResetDownscales(uint32_t cx, uint32_t cy);
+	void ResetDownscales(uint32_t cx, uint32_t cy,
+			     bool ignoreAllSignals = false);
 	void LoadDownscaleFilters();
 	void LoadResolutionLists();
 	void LoadFPSData();
@@ -269,6 +307,9 @@ private:
 	void SaveAdvancedSettings();
 	void SaveSettings();
 
+	void SearchHotkeys(const QString &text,
+			   obs_key_combination_t filterCombo);
+
 	void UpdateSimpleOutStreamDelayEstimate();
 	void UpdateAdvOutStreamDelayEstimate();
 
@@ -277,6 +318,28 @@ private:
 	void FillAudioMonitoringDevices();
 
 	void RecalcOutputResPixels(const char *resText);
+
+	bool AskIfCanCloseSettings();
+
+	QIcon generalIcon;
+	QIcon streamIcon;
+	QIcon outputIcon;
+	QIcon audioIcon;
+	QIcon videoIcon;
+	QIcon hotkeysIcon;
+	QIcon advancedIcon;
+
+	QIcon GetGeneralIcon() const;
+	QIcon GetStreamIcon() const;
+	QIcon GetOutputIcon() const;
+	QIcon GetAudioIcon() const;
+	QIcon GetVideoIcon() const;
+	QIcon GetHotkeysIcon() const;
+	QIcon GetAdvancedIcon() const;
+
+	int CurrentFLVTrack();
+
+	OBSService GetStream1Service();
 
 private slots:
 	void on_theme_activated(int idx);
@@ -305,6 +368,7 @@ private slots:
 	void on_disableOSXVSync_clicked();
 
 	void GeneralChanged();
+	void HideOBSWindowWarning(int state);
 	void AudioChanged();
 	void AudioChangedRestart();
 	void ReloadAudioSources();
@@ -316,6 +380,7 @@ private slots:
 	void VideoChangedResolution();
 	void VideoChangedRestart();
 	void HotkeysChanged();
+	bool ScanDuplicateHotkeys(QFormLayout *layout);
 	void ReloadHotkeys(obs_hotkey_id ignoreKey = OBS_INVALID_HOTKEY_ID);
 	void AdvancedChanged();
 	void AdvancedChangedRestart();
@@ -345,10 +410,18 @@ private slots:
 	void SetHotkeysIcon(const QIcon &icon);
 	void SetAdvancedIcon(const QIcon &icon);
 
+	void UseStreamKeyAdvClicked();
+
 protected:
-	virtual void closeEvent(QCloseEvent *event);
+	virtual void closeEvent(QCloseEvent *event) override;
+	void reject() override;
 
 public:
 	OBSBasicSettings(QWidget *parent);
 	~OBSBasicSettings();
+
+	inline const QIcon &GetHotkeyConflictIcon() const
+	{
+		return hotkeyConflictIcon;
+	}
 };

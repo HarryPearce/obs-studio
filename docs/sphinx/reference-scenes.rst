@@ -101,8 +101,8 @@ Scene Item Crop Structure (obs_sceneitem_crop)
    Bottom crop value.
 
 
-Scene Item Order Info Structure (*obs_sceneitem_order_info)
-----------------------------------------------
+Scene Item Order Info Structure (\*obs_sceneitem_order_info)
+------------------------------------------------------------
 
 .. type:: struct obs_sceneitem_order_info
 
@@ -134,6 +134,11 @@ Scene Signals
 **reorder** (ptr scene)
 
    Called when scene items have been reoredered in the scene.
+
+**refresh** (ptr scene)
+
+   Called when the entire scene item list needs to be refreshed.
+   Usually this is only used when groups have changed.
 
 **item_visible** (ptr scene, ptr item, bool visible)
 
@@ -192,9 +197,24 @@ General Scene Functions
 ---------------------
 
 .. function:: void obs_scene_addref(obs_scene_t *scene)
-              void obs_scene_release(obs_scene_t *scene)
 
-   Adds/releases a reference to a scene.
+   Adds a reference to a scene.
+
+.. deprecated:: 27.2.0
+   Use :c:func:`obs_scene_get_ref()` instead.
+
+---------------------
+
+.. function:: obs_scene_t *obs_scene_get_ref(obs_scene_t *scene)
+
+   Returns an incremented reference if still valid, otherwise returns
+   *NULL*.
+
+---------------------
+
+.. function:: void obs_scene_release(obs_scene_t *scene)
+
+   Releases a reference to a scene.
 
 ---------------------
 
@@ -225,6 +245,16 @@ General Scene Functions
 
 ---------------------
 
+.. function:: obs_sceneitem_t *obs_scene_find_source_recursive(obs_scene_t *scene, const char *name)
+
+   Same as obs_scene_find_source, but also searches groups within the
+   scene.
+
+   :param name: The name of the source to find
+   :return:     The scene item if found, otherwise *NULL* if not found
+
+---------------------
+
 .. function:: obs_sceneitem_t *obs_scene_find_sceneitem_by_id(obs_scene_t *scene, int64_t id)
 
    :param id: The unique numeric identifier of the scene item
@@ -247,6 +277,12 @@ General Scene Functions
 .. function:: bool obs_scene_reorder_items2(obs_scene_t *scene, struct obs_sceneitem_order_info *item_order, size_t item_order_size)
 
    Reorders items within a scene with groups and group sub-items.
+
+---------------------
+
+.. function:: void obs_scene_prune_sources(obs_scene_t *scene)
+
+   Releases all sources from a scene that have been marked as removed by obs_source_remove.
 
 ---------------------
 
@@ -283,9 +319,36 @@ Scene Item Functions
 
 ---------------------
 
+.. function:: obs_sceneitem_t *obs_scene_sceneitem_from_source(obs_scene_t *scene, obs_source_t *source)
+
+   This will add a reference to the sceneitem.
+
+   :return: The sceneitem associated with a source in a scene. Returns NULL if not found.
+
+---------------------
+
+.. function:: void obs_sceneitem_set_id(obs_sceneitem_t *item);
+
+   Sets the unique numeric identifier of the sceneitem. This is dangerous function and should not
+   normally be used. It can cause errors within obs.
+
+---------------------
+
 .. function:: int64_t obs_sceneitem_get_id(const obs_sceneitem_t *item)
 
-   :return: The unique numeric identifier of the scene item.
+   Gets the numeric identifier of the sceneitem.
+
+   :return: Gets the unique numeric identifier of the scene item.
+
+---------------------
+
+.. function:: obs_data_t *obs_scene_save_transform_states(obs_scene_t *scene, bool all_items)
+.. function:: void obs_scene_load_transform_states(oconst char *states)
+
+   Saves all the transformation states for the sceneitms in scene. When all_items is false, it
+   will only save selected items
+
+   :return: Data containing transformation states for all* sceneitems in scene
 
 ---------------------
 
@@ -339,7 +402,13 @@ Scene Item Functions
 
 .. function:: void obs_sceneitem_set_order_position(obs_sceneitem_t *item, int position)
 
-   Changes the scene item's order index.
+   Changes the sceneitem's order index.
+
+---------------------
+
+.. function:: int obs_sceneitem_get_order_position(obs_sceneitem_t *item)
+
+   :return: Gets position of sceneitem in its scene.
 
 ---------------------
 
@@ -398,7 +467,7 @@ Scene Item Functions
 
 .. function:: void obs_sceneitem_get_box_transform(const obs_sceneitem_t *item, struct matrix4 *transform)
 
-   Gets the transform matrix of the scene item used for the bouding box
+   Gets the transform matrix of the scene item used for the bounding box
    or edges of the scene item.
 
 ---------------------
@@ -438,6 +507,22 @@ Scene Item Functions
 
 ---------------------
 
+.. function:: void obs_sceneitem_set_blending_mode(obs_sceneitem_t *item, enum obs_blending_type type)
+              enum obs_blending_type obs_sceneitem_get_blending_mode(obs_sceneitem_t *item)
+
+   Sets/gets the blending mode used for the scene item.
+
+   :param type: | Can be one of the following values:
+                | OBS_BLEND_NORMAL
+                | OBS_BLEND_ADDITIVE
+                | OBS_BLEND_SUBTRACT
+                | OBS_BLEND_SCREEN
+                | OBS_BLEND_MULTIPLY
+                | OBS_BLEND_LIGHTEN
+                | OBS_BLEND_DARKEN
+
+---------------------
+
 .. function:: void obs_sceneitem_defer_update_begin(obs_sceneitem_t *item)
               void obs_sceneitem_defer_update_end(obs_sceneitem_t *item)
 
@@ -455,6 +540,40 @@ Scene Item Functions
 
 ---------------------
 
+.. function:: void obs_sceneitem_set_show_transition(obs_sceneitem_t *item, obs_source_t *transition)
+              void obs_sceneitem_set_hide_transition(obs_sceneitem_t *item, obs_source_t *transition)
+
+   Set a transition for showing or hiding a scene item. Set *NULL* to remove the transition.
+
+---------------------
+
+.. function:: obs_source_t *obs_sceneitem_get_show_transition(obs_sceneitem_t *item)
+              obs_source_t *obs_sceneitem_get_hide_transition(obs_sceneitem_t *item)
+
+   :return: The transition for showing or hiding a scene item. *NULL* if no transition is set.
+
+---------------------
+
+.. function:: void obs_sceneitem_set_show_transition_duration(obs_sceneitem_t *item, uint32_t duration_ms)
+              void obs_sceneitem_set_hide_transition_duration(obs_sceneitem_t *item, uint32_t duration_ms)
+
+   Set transition duration for showing or hiding a scene item.
+
+---------------------
+
+.. function:: uint32_t obs_sceneitem_get_show_transition_duration(obs_sceneitem_t *item)
+              uint32_t obs_sceneitem_get_hide_transition_duration(obs_sceneitem_t *item)
+
+   :return: The transition duration in ms for showing or hiding a scene item.
+
+---------------------
+
+.. function:: void obs_sceneitem_do_transition(obs_sceneitem_t *item, bool visible)
+
+   Start the transition for showing or hiding a scene item.
+
+---------------------
+
 
 .. _scene_item_group_reference:
 
@@ -463,7 +582,8 @@ Scene Item Group Functions
 
 .. function:: obs_sceneitem_t *obs_scene_add_group(obs_scene_t *scene, const char *name)
 
-   Adds a group with the specified name.
+   Adds a group with the specified name.  Does not signal the scene with
+   the *refresh* signal.
 
    :param scene: Scene to add the group to
    :param name:  Name of the group
@@ -471,15 +591,43 @@ Scene Item Group Functions
 
 ---------------------
 
+.. function:: obs_sceneitem_t *obs_scene_add_group2(obs_scene_t *scene, const char *name, bool signal)
+
+   Adds a group with the specified name.
+
+   :param scene:  Scene to add the group to
+   :param name:   Name of the group
+   :param signal: If *true*, signals the scene with the *refresh*
+                  signal
+   :return:       The new group's scene item
+
+---------------------
+
 .. function:: obs_sceneitem_t *obs_scene_insert_group(obs_scene_t *scene, const char *name, obs_sceneitem_t **items, size_t count)
 
    Creates a group out of the specified scene items.  The group will be
-   inserted at the top scene item.
+   inserted at the top scene item.  Does not signal the scene with the
+   *refresh* signal.
 
    :param scene: Scene to add the group to
    :param name:  Name of the group
    :param items: Array of scene items to put in a group
    :param count: Number of scene items in the array
+   :return:      The new group's scene item
+
+---------------------
+
+.. function:: obs_sceneitem_t *obs_scene_insert_group2(obs_scene_t *scene, const char *name, obs_sceneitem_t **items, size_t count, bool signal)
+
+   Creates a group out of the specified scene items.  The group will be
+   inserted at the top scene item.  Does not signal a refresh.
+
+   :param scene: Scene to add the group to
+   :param name:  Name of the group
+   :param items: Array of scene items to put in a group
+   :param count: Number of scene items in the array
+   :param signal: If *true*, signals the scene with the *refresh*
+                  signal
    :return:      The new group's scene item
 
 ---------------------
@@ -491,6 +639,21 @@ Scene Item Group Functions
    :param scene: Scene to find the group within
    :param name:  The name of the group to find
    :return:      The group scene item, or *NULL* if not found
+
+---------------------
+
+.. function:: obs_scene_t *obs_group_from_source(const obs_source_t *source)
+
+   :return: The group context, or *NULL* if not a group.  Does not
+            increase the reference
+
+---------------------
+
+.. function:: obs_scene_t *obs_group_or_scene_from_source(const obs_source_t *source)
+
+   :return: The context for the source, regardless of if it is a
+            group or a scene.  *NULL* if neither.  Does not increase
+            the reference
 
 ---------------------
 
@@ -511,7 +674,19 @@ Scene Item Group Functions
 .. function:: void obs_sceneitem_group_ungroup(obs_sceneitem_t *group)
 
    Ungroups the specified group.  Scene items within the group will be
+   placed where the group was.  Does not signal the scene with the
+   *refresh* signal.
+
+---------------------
+
+.. function:: void obs_sceneitem_group_ungroup2(obs_sceneitem_t *group, bool signal)
+
+   Ungroups the specified group.  Scene items within the group will be
    placed where the group was.
+
+   :param group: Group scene item
+   :param signal: If *true*, signals the scene with the *refresh*
+                  signal
 
 ---------------------
 
@@ -523,8 +698,8 @@ Scene Item Group Functions
 
 .. function:: void obs_sceneitem_group_remove_item(obs_sceneitem_t *item)
 
-   Rmoves a scene item from a group.  The item will be placed before the
-   group in the main scene.
+   Removes a scene item from a group.  The item will be placed before
+   the group in the main scene.
 
 ---------------------
 

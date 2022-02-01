@@ -9,49 +9,55 @@
 #include "qt-wrappers.hpp"
 #include "platform.hpp"
 
-static QList<OBSProjector *> windowedProjectors;
 static QList<OBSProjector *> multiviewProjectors;
+static QList<OBSProjector *> allProjectors;
+
 static bool updatingMultiview = false, drawLabel, drawSafeArea, mouseSwitching,
 	    transitionOnDoubleClick;
 static MultiviewLayout multiviewLayout;
 static size_t maxSrcs, numSrcs;
 
 OBSProjector::OBSProjector(QWidget *widget, obs_source_t *source_, int monitor,
-			   QString title, ProjectorType type_)
+			   ProjectorType type_)
 	: OBSQTDisplay(widget, Qt::Window),
 	  source(source_),
 	  removedSignal(obs_source_get_signal_handler(source), "remove",
 			OBSSourceRemoved, this)
 {
-	projectorTitle = std::move(title);
-	savedMonitor = monitor;
-	isWindow = savedMonitor < 0;
+	isAlwaysOnTop = config_get_bool(GetGlobalConfig(), "BasicWindow",
+					"ProjectorAlwaysOnTop");
+
+	if (isAlwaysOnTop)
+		setWindowFlags(Qt::WindowStaysOnTopHint);
+
+	// Mark the window as a projector so SetDisplayAffinity
+	// can skip it
+	windowHandle()->setProperty("isOBSProjectorWindow", true);
+
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__DragonFly__)
+	// Prevents resizing of projector windows
+	setAttribute(Qt::WA_PaintOnScreen, false);
+#endif
+
 	type = type_;
+#ifdef __APPLE__
+	setWindowIcon(
+		QIcon::fromTheme("obs", QIcon(":/res/images/obs_256x256.png")));
+#else
+	setWindowIcon(QIcon::fromTheme("obs", QIcon(":/res/images/obs.png")));
+#endif
 
-	if (isWindow) {
-		setWindowIcon(
-			QIcon::fromTheme("obs", QIcon(":/res/images/obs.png")));
-
-		UpdateProjectorTitle(projectorTitle);
-		windowedProjectors.push_back(this);
-
+	if (monitor == -1)
 		resize(480, 270);
-	} else {
-		setWindowFlags(Qt::FramelessWindowHint |
-			       Qt::X11BypassWindowManagerHint);
+	else
+		SetMonitor(monitor);
 
-		QScreen *screen = QGuiApplication::screens()[savedMonitor];
-		setGeometry(screen->geometry());
+	UpdateProjectorTitle(QT_UTF8(obs_source_get_name(source)));
 
-		QAction *action = new QAction(this);
-		action->setShortcut(Qt::Key_Escape);
-		addAction(action);
-		connect(action, SIGNAL(triggered()), this,
-			SLOT(EscapeTriggered()));
-	}
-
-	SetAlwaysOnTop(this, config_get_bool(GetGlobalConfig(), "BasicWindow",
-					     "ProjectorAlwaysOnTop"));
+	QAction *action = new QAction(this);
+	action->setShortcut(Qt::Key_Escape);
+	addAction(action);
+	connect(action, SIGNAL(triggered()), this, SLOT(EscapeTriggered()));
 
 	setAttribute(Qt::WA_DeleteOnClose, true);
 
@@ -69,68 +75,13 @@ OBSProjector::OBSProjector(QWidget *widget, obs_source_t *source_, int monitor,
 	};
 
 	connect(this, &OBSQTDisplay::DisplayCreated, addDrawCallback);
-
-	bool hideCursor = config_get_bool(GetGlobalConfig(), "BasicWindow",
-					  "HideProjectorCursor");
-	if (hideCursor && !isWindow && type != ProjectorType::Multiview) {
-		QPixmap empty(16, 16);
-		empty.fill(Qt::transparent);
-		setCursor(QCursor(empty));
-	}
+	connect(App(), &QGuiApplication::screenRemoved, this,
+		&OBSProjector::ScreenRemoved);
 
 	if (type == ProjectorType::Multiview) {
-		obs_enter_graphics();
-
-		// All essential action should be placed inside this area
-		gs_render_start(true);
-		gs_vertex2f(actionSafePercentage, actionSafePercentage);
-		gs_vertex2f(actionSafePercentage, 1 - actionSafePercentage);
-		gs_vertex2f(1 - actionSafePercentage, 1 - actionSafePercentage);
-		gs_vertex2f(1 - actionSafePercentage, actionSafePercentage);
-		gs_vertex2f(actionSafePercentage, actionSafePercentage);
-		actionSafeMargin = gs_render_save();
-
-		// All graphics should be placed inside this area
-		gs_render_start(true);
-		gs_vertex2f(graphicsSafePercentage, graphicsSafePercentage);
-		gs_vertex2f(graphicsSafePercentage, 1 - graphicsSafePercentage);
-		gs_vertex2f(1 - graphicsSafePercentage,
-			    1 - graphicsSafePercentage);
-		gs_vertex2f(1 - graphicsSafePercentage, graphicsSafePercentage);
-		gs_vertex2f(graphicsSafePercentage, graphicsSafePercentage);
-		graphicsSafeMargin = gs_render_save();
-
-		// 4:3 safe area for widescreen
-		gs_render_start(true);
-		gs_vertex2f(fourByThreeSafePercentage, graphicsSafePercentage);
-		gs_vertex2f(1 - fourByThreeSafePercentage,
-			    graphicsSafePercentage);
-		gs_vertex2f(1 - fourByThreeSafePercentage,
-			    1 - graphicsSafePercentage);
-		gs_vertex2f(fourByThreeSafePercentage,
-			    1 - graphicsSafePercentage);
-		gs_vertex2f(fourByThreeSafePercentage, graphicsSafePercentage);
-		fourByThreeSafeMargin = gs_render_save();
-
-		gs_render_start(true);
-		gs_vertex2f(0.0f, 0.5f);
-		gs_vertex2f(lineLength, 0.5f);
-		leftLine = gs_render_save();
-
-		gs_render_start(true);
-		gs_vertex2f(0.5f, 0.0f);
-		gs_vertex2f(0.5f, lineLength);
-		topLine = gs_render_save();
-
-		gs_render_start(true);
-		gs_vertex2f(1.0f, 0.5f);
-		gs_vertex2f(1 - lineLength, 0.5f);
-		rightLine = gs_render_save();
-		obs_leave_graphics();
-
-		solid = obs_get_base_effect(OBS_EFFECT_SOLID);
-		color = gs_effect_get_param_by_name(solid, "color");
-
+		InitSafeAreas(&actionSafeMargin, &graphicsSafeMargin,
+			      &fourByThreeSafeMargin, &leftLine, &topLine,
+			      &rightLine);
 		UpdateMultiview();
 
 		multiviewProjectors.push_back(this);
@@ -141,13 +92,14 @@ OBSProjector::OBSProjector(QWidget *widget, obs_source_t *source_, int monitor,
 	if (source)
 		obs_source_inc_showing(source);
 
+	allProjectors.push_back(this);
+
 	ready = true;
 
 	show();
 
 	// We need it here to allow keyboard input in X11 to listen to Escape
-	if (!isWindow)
-		activateWindow();
+	activateWindow();
 }
 
 OBSProjector::~OBSProjector()
@@ -180,16 +132,38 @@ OBSProjector::~OBSProjector()
 	if (type == ProjectorType::Multiview)
 		multiviewProjectors.removeAll(this);
 
-	if (isWindow)
-		windowedProjectors.removeAll(this);
-
 	App()->DecrementSleepInhibition();
+
+	screen = nullptr;
+}
+
+void OBSProjector::SetMonitor(int monitor)
+{
+	savedMonitor = monitor;
+	screen = QGuiApplication::screens()[monitor];
+	setGeometry(screen->geometry());
+	showFullScreen();
+	SetHideCursor();
+}
+
+void OBSProjector::SetHideCursor()
+{
+	if (savedMonitor == -1)
+		return;
+
+	bool hideCursor = config_get_bool(GetGlobalConfig(), "BasicWindow",
+					  "HideProjectorCursor");
+
+	if (hideCursor && type != ProjectorType::Multiview)
+		setCursor(Qt::BlankCursor);
+	else
+		setCursor(Qt::ArrowCursor);
 }
 
 static OBSSource CreateLabel(const char *name, size_t h)
 {
-	obs_data_t *settings = obs_data_create();
-	obs_data_t *font = obs_data_create();
+	OBSDataAutoRelease settings = obs_data_create();
+	OBSDataAutoRelease font = obs_data_create();
 
 	std::string text;
 	text += " ";
@@ -216,21 +190,17 @@ static OBSSource CreateLabel(const char *name, size_t h)
 	const char *text_source_id = "text_ft2_source";
 #endif
 
-	OBSSource txtSource =
+	OBSSourceAutoRelease txtSource =
 		obs_source_create_private(text_source_id, name, settings);
-	obs_source_release(txtSource);
 
-	obs_data_release(font);
-	obs_data_release(settings);
-
-	return txtSource;
+	return txtSource.Get();
 }
 
 static inline uint32_t labelOffset(obs_source_t *label, uint32_t cx)
 {
 	uint32_t w = obs_source_get_width(label);
 
-	int n; // Number of scenes per row
+	int n; // Twice of scale factor of preview and program scenes
 	switch (multiviewLayout) {
 	case MultiviewLayout::HORIZONTAL_TOP_24_SCENES:
 		n = 6;
@@ -280,31 +250,13 @@ void OBSProjector::OBSRenderMultiview(void *data, uint32_t cx, uint32_t cy)
 	OBSSource programSrc = main->GetProgramSource();
 	bool studioMode = main->IsPreviewProgramMode();
 
-	auto renderVB = [&](gs_vertbuffer_t *vb, int cx, int cy,
-			    uint32_t colorVal) {
-		if (!vb)
-			return;
-
-		matrix4 transform;
-		matrix4_identity(&transform);
-		transform.x.x = cx;
-		transform.y.y = cy;
-
-		gs_load_vertexbuffer(vb);
-
-		gs_matrix_push();
-		gs_matrix_mul(&transform);
-
-		gs_effect_set_color(window->color, colorVal);
-		while (gs_effect_loop(window->solid, "Solid"))
-			gs_draw(GS_LINESTRIP, 0, 0);
-
-		gs_matrix_pop();
-	};
-
 	auto drawBox = [&](float cx, float cy, uint32_t colorVal) {
-		gs_effect_set_color(window->color, colorVal);
-		while (gs_effect_loop(window->solid, "Solid"))
+		gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+		gs_eparam_t *color =
+			gs_effect_get_param_by_name(solid, "color");
+
+		gs_effect_set_color(color, colorVal);
+		while (gs_effect_loop(solid, "Solid"))
 			gs_draw_sprite(nullptr, 0, (uint32_t)cx, (uint32_t)cy);
 	};
 
@@ -324,6 +276,11 @@ void OBSProjector::OBSRenderMultiview(void *data, uint32_t cx, uint32_t cy)
 
 	auto calcBaseSource = [&](size_t i) {
 		switch (multiviewLayout) {
+		case MultiviewLayout::HORIZONTAL_TOP_18_SCENES:
+			window->sourceX = (i % 6) * window->scenesCX;
+			window->sourceY =
+				window->pvwprgCY + (i / 6) * window->scenesCY;
+			break;
 		case MultiviewLayout::HORIZONTAL_TOP_24_SCENES:
 			window->sourceX = (i % 6) * window->scenesCX;
 			window->sourceY =
@@ -409,7 +366,7 @@ void OBSProjector::OBSRenderMultiview(void *data, uint32_t cx, uint32_t cy)
 				window->labelX += window->pvwprgCX;
 			}
 			break;
-		default: // MultiviewLayout::HORIZONTAL_TOP_8_SCENES:
+		default: // MultiviewLayout::HORIZONTAL_TOP_8_SCENES and 18_SCENES
 			window->sourceX = window->thickness;
 			window->sourceY = window->thickness;
 			window->labelX = window->offset;
@@ -527,17 +484,17 @@ void OBSProjector::OBSRenderMultiview(void *data, uint32_t cx, uint32_t cy)
 		obs_source_video_render(previewSrc);
 	else
 		obs_render_main_texture();
+
 	if (drawSafeArea) {
-		renderVB(window->actionSafeMargin, targetCX, targetCY,
-			 outerColor);
-		renderVB(window->graphicsSafeMargin, targetCX, targetCY,
-			 outerColor);
-		renderVB(window->fourByThreeSafeMargin, targetCX, targetCY,
-			 outerColor);
-		renderVB(window->leftLine, targetCX, targetCY, outerColor);
-		renderVB(window->topLine, targetCX, targetCY, outerColor);
-		renderVB(window->rightLine, targetCX, targetCY, outerColor);
+		RenderSafeAreas(window->actionSafeMargin, targetCX, targetCY);
+		RenderSafeAreas(window->graphicsSafeMargin, targetCX, targetCY);
+		RenderSafeAreas(window->fourByThreeSafeMargin, targetCX,
+				targetCY);
+		RenderSafeAreas(window->leftLine, targetCX, targetCY);
+		RenderSafeAreas(window->topLine, targetCX, targetCY);
+		RenderSafeAreas(window->rightLine, targetCX, targetCY);
 	}
+
 	endRegion();
 	gs_matrix_pop();
 
@@ -591,7 +548,7 @@ void OBSProjector::OBSRenderMultiview(void *data, uint32_t cx, uint32_t cy)
 		gs_matrix_pop();
 	}
 
-	// Region for future usage with aditional info.
+	// Region for future usage with additional info.
 	if (multiviewLayout == MultiviewLayout::HORIZONTAL_TOP_24_SCENES) {
 		// Just paint the background for now
 		paintAreaWithColor(window->thickness, window->thickness,
@@ -653,6 +610,9 @@ void OBSProjector::OBSRender(void *data, uint32_t cx, uint32_t cy)
 			source = curSource;
 			window->source = source;
 		}
+	} else if (window->type == ProjectorType::Preview &&
+		   !main->IsPreviewProgramMode()) {
+		window->source = nullptr;
 	}
 
 	if (source)
@@ -667,7 +627,9 @@ void OBSProjector::OBSSourceRemoved(void *data, calldata_t *params)
 {
 	OBSProjector *window = reinterpret_cast<OBSProjector *>(data);
 
-	window->deleteLater();
+	OBSBasic *main = reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
+	main->DeleteProjector(window);
+	allProjectors.removeAll(window);
 
 	UNUSED_PARAMETER(params);
 }
@@ -686,6 +648,24 @@ static int getSourceByPosition(int x, int y, float ratio)
 	int maxY = cy;
 
 	switch (multiviewLayout) {
+	case MultiviewLayout::HORIZONTAL_TOP_18_SCENES:
+		if (float(cx) / float(cy) > ratio) {
+			int validX = cy * ratio;
+			minX = (cx / 2) - (validX / 2);
+			maxX = (cx / 2) + (validX / 2);
+		} else {
+			int validY = cx / ratio;
+			maxY = (cy / 2) + (validY / 2);
+		}
+		minY = cy / 2;
+
+		if (x < minX || x > maxX || y < minY || y > maxY)
+			break;
+
+		pos = (x - minX) / ((maxX - minX) / 6);
+		pos += ((y - minY) / ((maxY - minY) / 3)) * 6;
+
+		break;
 	case MultiviewLayout::HORIZONTAL_TOP_24_SCENES:
 		if (float(cx) / float(cy) > ratio) {
 			int validX = cy * ratio;
@@ -817,7 +797,34 @@ void OBSProjector::mousePressEvent(QMouseEvent *event)
 	OBSQTDisplay::mousePressEvent(event);
 
 	if (event->button() == Qt::RightButton) {
+		OBSBasic *main =
+			reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
 		QMenu popup(this);
+
+		QMenu *projectorMenu = new QMenu(QTStr("Fullscreen"));
+		main->AddProjectorMenuMonitors(projectorMenu, this,
+					       SLOT(OpenFullScreenProjector()));
+		popup.addMenu(projectorMenu);
+
+		if (GetMonitor() > -1) {
+			popup.addAction(QTStr("Windowed"), this,
+					SLOT(OpenWindowedProjector()));
+
+		} else if (!this->isMaximized()) {
+			popup.addAction(QTStr("ResizeProjectorWindowToContent"),
+					this, SLOT(ResizeToContent()));
+		}
+
+		QAction *alwaysOnTopButton =
+			new QAction(QTStr("Basic.MainMenu.AlwaysOnTop"), this);
+		alwaysOnTopButton->setCheckable(true);
+		alwaysOnTopButton->setChecked(isAlwaysOnTop);
+
+		connect(alwaysOnTopButton, &QAction::toggled, this,
+			&OBSProjector::AlwaysOnTopToggled);
+
+		popup.addAction(alwaysOnTopButton);
+
 		popup.addAction(QTStr("Close"), this, SLOT(EscapeTriggered()));
 		popup.exec(QCursor::pos());
 	}
@@ -841,7 +848,10 @@ void OBSProjector::mousePressEvent(QMouseEvent *event)
 
 void OBSProjector::EscapeTriggered()
 {
-	deleteLater();
+	OBSBasic *main = reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
+	main->DeleteProjector(this);
+
+	allProjectors.removeAll(this);
 }
 
 void OBSProjector::UpdateMultiview()
@@ -882,6 +892,12 @@ void OBSProjector::UpdateMultiview()
 		GetGlobalConfig(), "BasicWindow", "TransitionOnDoubleClick");
 
 	switch (multiviewLayout) {
+	case MultiviewLayout::HORIZONTAL_TOP_18_SCENES:
+		pvwprgCX = fw / 2;
+		pvwprgCY = fh / 2;
+
+		maxSrcs = 18;
+		break;
 	case MultiviewLayout::HORIZONTAL_TOP_24_SCENES:
 		pvwprgCX = fw / 3;
 		pvwprgCY = fh / 3;
@@ -900,8 +916,16 @@ void OBSProjector::UpdateMultiview()
 	ppiScaleX = (pvwprgCX - thicknessx2) / fw;
 	ppiScaleY = (pvwprgCY - thicknessx2) / fh;
 
-	scenesCX = pvwprgCX / 2;
-	scenesCY = pvwprgCY / 2;
+	switch (multiviewLayout) {
+	case MultiviewLayout::HORIZONTAL_TOP_18_SCENES:
+		scenesCX = pvwprgCX / 3;
+		scenesCY = pvwprgCY / 3;
+		break;
+	default:
+		scenesCX = pvwprgCX / 2;
+		scenesCY = pvwprgCY / 2;
+	}
+
 	siCX = scenesCX - thicknessx2;
 	siCY = scenesCY - thicknessx2;
 	siScaleX = (scenesCX - thicknessx2) / fw;
@@ -911,8 +935,7 @@ void OBSProjector::UpdateMultiview()
 	size_t i = 0;
 	while (i < scenes.sources.num && numSrcs < maxSrcs) {
 		obs_source_t *src = scenes.sources.array[i++];
-		OBSData data = obs_source_get_private_settings(src);
-		obs_data_release(data);
+		OBSDataAutoRelease data = obs_source_get_private_settings(src);
 
 		obs_data_set_default_bool(data, "show_in_multiview", true);
 		if (!obs_data_get_bool(data, "show_in_multiview"))
@@ -934,15 +957,39 @@ void OBSProjector::UpdateMultiview()
 
 void OBSProjector::UpdateProjectorTitle(QString name)
 {
-	projectorTitle = name;
+	bool window = (GetMonitor() == -1);
 
 	QString title = nullptr;
 	switch (type) {
 	case ProjectorType::Scene:
-		title = QTStr("SceneWindow") + " - " + name;
+		if (!window)
+			title = QTStr("SceneProjector") + " - " + name;
+		else
+			title = QTStr("SceneWindow") + " - " + name;
 		break;
 	case ProjectorType::Source:
-		title = QTStr("SourceWindow") + " - " + name;
+		if (!window)
+			title = QTStr("SourceProjector") + " - " + name;
+		else
+			title = QTStr("SourceWindow") + " - " + name;
+		break;
+	case ProjectorType::Preview:
+		if (!window)
+			title = QTStr("PreviewProjector");
+		else
+			title = QTStr("PreviewWindow");
+		break;
+	case ProjectorType::StudioProgram:
+		if (!window)
+			title = QTStr("StudioProgramProjector");
+		else
+			title = QTStr("StudioProgramWindow");
+		break;
+	case ProjectorType::Multiview:
+		if (!window)
+			title = QTStr("MultiviewProjector");
+		else
+			title = QTStr("MultiviewWindowed");
 		break;
 	default:
 		title = name;
@@ -983,7 +1030,101 @@ void OBSProjector::UpdateMultiviewProjectors()
 
 void OBSProjector::RenameProjector(QString oldName, QString newName)
 {
-	for (auto &projector : windowedProjectors)
-		if (projector->projectorTitle == oldName)
-			projector->UpdateProjectorTitle(newName);
+	if (oldName == newName)
+		return;
+
+	UpdateProjectorTitle(newName);
+}
+
+void OBSProjector::OpenFullScreenProjector()
+{
+	if (!isFullScreen())
+		prevGeometry = geometry();
+
+	int monitor = sender()->property("monitor").toInt();
+	SetMonitor(monitor);
+
+	UpdateProjectorTitle(QT_UTF8(obs_source_get_name(source)));
+}
+
+void OBSProjector::OpenWindowedProjector()
+{
+	showFullScreen();
+	showNormal();
+	setCursor(Qt::ArrowCursor);
+
+	if (!prevGeometry.isNull())
+		setGeometry(prevGeometry);
+	else
+		resize(480, 270);
+
+	savedMonitor = -1;
+
+	UpdateProjectorTitle(QT_UTF8(obs_source_get_name(source)));
+	screen = nullptr;
+}
+
+void OBSProjector::ResizeToContent()
+{
+	OBSSource source = GetSource();
+	uint32_t targetCX;
+	uint32_t targetCY;
+	int x, y, newX, newY;
+	float scale;
+
+	if (source) {
+		targetCX = std::max(obs_source_get_width(source), 1u);
+		targetCY = std::max(obs_source_get_height(source), 1u);
+	} else {
+		struct obs_video_info ovi;
+		obs_get_video_info(&ovi);
+		targetCX = ovi.base_width;
+		targetCY = ovi.base_height;
+	}
+
+	QSize size = this->size();
+	GetScaleAndCenterPos(targetCX, targetCY, size.width(), size.height(), x,
+			     y, scale);
+
+	newX = size.width() - (x * 2);
+	newY = size.height() - (y * 2);
+	resize(newX, newY);
+}
+
+void OBSProjector::AlwaysOnTopToggled(bool isAlwaysOnTop)
+{
+	SetIsAlwaysOnTop(isAlwaysOnTop, true);
+}
+
+void OBSProjector::closeEvent(QCloseEvent *event)
+{
+	EscapeTriggered();
+	event->accept();
+}
+
+bool OBSProjector::IsAlwaysOnTop() const
+{
+	return isAlwaysOnTop;
+}
+
+bool OBSProjector::IsAlwaysOnTopOverridden() const
+{
+	return isAlwaysOnTopOverridden;
+}
+
+void OBSProjector::SetIsAlwaysOnTop(bool isAlwaysOnTop, bool isOverridden)
+{
+	this->isAlwaysOnTop = isAlwaysOnTop;
+	this->isAlwaysOnTopOverridden = isOverridden;
+
+	SetAlwaysOnTop(this, isAlwaysOnTop);
+}
+
+void OBSProjector::ScreenRemoved(QScreen *screen_)
+{
+	if (GetMonitor() < 0 || !screen)
+		return;
+
+	if (screen == screen_)
+		EscapeTriggered();
 }

@@ -79,6 +79,8 @@ static inline enum video_format v4l2_to_obs_video_format(uint_fast32_t format)
 #endif
 	case V4L2_PIX_FMT_BGR24:
 		return VIDEO_FORMAT_BGR3;
+	case V4L2_PIX_FMT_MJPEG:
+		return VIDEO_FORMAT_I422;
 	default:
 		return VIDEO_FORMAT_NONE;
 	}
@@ -183,6 +185,34 @@ int_fast32_t v4l2_start_capture(int_fast32_t dev, struct v4l2_buffer_data *buf);
  * @return negative on failure
  */
 int_fast32_t v4l2_stop_capture(int_fast32_t dev);
+
+/**
+ * Resets video capture on the device.
+ *
+ * This runs stop and start capture again. Stop dequeues the buffers and start
+ * enqueues the memory mapped buffers and instructs the device to start
+ * the video stream.
+ *
+ * @param dev handle for the v4l2 device
+ * @param buf buffer data
+ *
+ * @return negative on failure
+ */
+int_fast32_t v4l2_reset_capture(int_fast32_t dev, struct v4l2_buffer_data *buf);
+
+#ifdef _DEBUG
+/**
+ * Query the status of all buffers.
+ * Only used for debug purposes.
+ *
+ * @param dev handle for the v4l2 device
+ * @param buf_data buffer data
+ *
+ * @return negative on failure
+ */
+int_fast32_t v4l2_query_all_buffers(int_fast32_t dev,
+				    struct v4l2_buffer_data *buf_data);
+#endif
 
 /**
  * Create memory mapping for buffers

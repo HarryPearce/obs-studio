@@ -34,6 +34,7 @@ struct gs_exports {
 	void (*device_destroy)(gs_device_t *device);
 	void (*device_enter_context)(gs_device_t *device);
 	void (*device_leave_context)(gs_device_t *device);
+	void *(*device_get_device_obj)(gs_device_t *device);
 	gs_swapchain_t *(*device_swapchain_create)(
 		gs_device_t *device, const struct gs_init_data *data);
 	void (*device_resize)(gs_device_t *device, uint32_t x, uint32_t y);
@@ -52,7 +53,7 @@ struct gs_exports {
 	gs_texture_t *(*device_voltexture_create)(
 		gs_device_t *device, uint32_t width, uint32_t height,
 		uint32_t depth, enum gs_color_format color_format,
-		uint32_t levels, const uint8_t **data, uint32_t flags);
+		uint32_t levels, const uint8_t *const *data, uint32_t flags);
 	gs_zstencil_t *(*device_zstencil_create)(
 		gs_device_t *device, uint32_t width, uint32_t height,
 		enum gs_zstencil_format format);
@@ -77,6 +78,8 @@ struct gs_exports {
 						       void *indices,
 						       size_t num,
 						       uint32_t flags);
+	gs_timer_t *(*device_timer_create)(gs_device_t *device);
+	gs_timer_range_t *(*device_timer_range_create)(gs_device_t *device);
 	enum gs_texture_type (*device_get_texture_type)(
 		const gs_texture_t *texture);
 	void (*device_load_vertexbuffer)(gs_device_t *device,
@@ -103,6 +106,9 @@ struct gs_exports {
 	void (*device_set_cube_render_target)(gs_device_t *device,
 					      gs_texture_t *cubetex, int side,
 					      gs_zstencil_t *zstencil);
+	void (*device_enable_framebuffer_srgb)(gs_device_t *device,
+					       bool enable);
+	bool (*device_framebuffer_srgb_enabled)(gs_device_t *device);
 	void (*device_copy_texture)(gs_device_t *device, gs_texture_t *dst,
 				    gs_texture_t *src);
 	void (*device_copy_texture_region)(gs_device_t *device,
@@ -112,6 +118,7 @@ struct gs_exports {
 					   uint32_t src_w, uint32_t src_h);
 	void (*device_stage_texture)(gs_device_t *device, gs_stagesurf_t *dst,
 				     gs_texture_t *src);
+	void (*device_begin_frame)(gs_device_t *device);
 	void (*device_begin_scene)(gs_device_t *device);
 	void (*device_draw)(gs_device_t *device, enum gs_draw_mode draw_mode,
 			    uint32_t start_vert, uint32_t num_verts);
@@ -140,6 +147,8 @@ struct gs_exports {
 					       enum gs_blend_type dest_c,
 					       enum gs_blend_type src_a,
 					       enum gs_blend_type dest_a);
+	void (*device_blend_op)(gs_device_t *device, enum gs_blend_op_type op);
+
 	void (*device_depth_function)(gs_device_t *device,
 				      enum gs_depth_test test);
 	void (*device_stencil_function)(gs_device_t *device,
@@ -219,6 +228,16 @@ struct gs_exports {
 	enum gs_index_type (*gs_indexbuffer_get_type)(
 		const gs_indexbuffer_t *indexbuffer);
 
+	void (*gs_timer_destroy)(gs_timer_t *timer);
+	void (*gs_timer_begin)(gs_timer_t *timer);
+	void (*gs_timer_end)(gs_timer_t *timer);
+	bool (*gs_timer_get_data)(gs_timer_t *timer, uint64_t *ticks);
+	void (*gs_timer_range_destroy)(gs_timer_range_t *range);
+	bool (*gs_timer_range_begin)(gs_timer_range_t *range);
+	bool (*gs_timer_range_end)(gs_timer_range_t *range);
+	bool (*gs_timer_range_get_data)(gs_timer_range_t *range, bool *disjoint,
+					uint64_t *frequency);
+
 	void (*gs_shader_destroy)(gs_shader_t *shader);
 	int (*gs_shader_get_num_params)(const gs_shader_t *shader);
 	gs_sparam_t *(*gs_shader_get_param_by_idx)(gs_shader_t *shader,
@@ -257,8 +276,11 @@ struct gs_exports {
 	/* OSX/Cocoa specific functions */
 	gs_texture_t *(*device_texture_create_from_iosurface)(gs_device_t *dev,
 							      void *iosurf);
+	gs_texture_t *(*device_texture_open_shared)(gs_device_t *dev,
+						    uint32_t *handle);
 	bool (*gs_texture_rebind_iosurface)(gs_texture_t *texture,
 					    void *iosurf);
+	bool (*device_shared_texture_available)(void);
 
 #elif _WIN32
 	bool (*device_gdi_texture_available)(void);
@@ -267,6 +289,8 @@ struct gs_exports {
 	bool (*device_get_duplicator_monitor_info)(
 		gs_device_t *device, int monitor_idx,
 		struct gs_monitor_info *monitor_info);
+	int (*device_duplicator_get_monitor_index)(gs_device_t *device,
+						   void *monitor);
 
 	gs_duplicator_t *(*device_duplicator_create)(gs_device_t *device,
 						     int monitor_idx);
@@ -274,6 +298,8 @@ struct gs_exports {
 
 	bool (*gs_duplicator_update_frame)(gs_duplicator_t *duplicator);
 	gs_texture_t *(*gs_duplicator_get_texture)(gs_duplicator_t *duplicator);
+
+	uint32_t (*gs_get_adapter_count)(void);
 
 	gs_texture_t *(*device_texture_create_gdi)(gs_device_t *device,
 						   uint32_t width,
@@ -284,7 +310,11 @@ struct gs_exports {
 
 	gs_texture_t *(*device_texture_open_shared)(gs_device_t *device,
 						    uint32_t handle);
+	gs_texture_t *(*device_texture_open_nt_shared)(gs_device_t *device,
+						       uint32_t handle);
 	uint32_t (*device_texture_get_shared_handle)(gs_texture_t *tex);
+	gs_texture_t *(*device_texture_wrap_obj)(gs_device_t *device,
+						 void *obj);
 	int (*device_texture_acquire_sync)(gs_texture_t *tex, uint64_t key,
 					   uint32_t ms);
 	int (*device_texture_release_sync)(gs_texture_t *tex, uint64_t key);
@@ -297,6 +327,23 @@ struct gs_exports {
 	gs_stagesurf_t *(*device_stagesurface_create_nv12)(gs_device_t *device,
 							   uint32_t width,
 							   uint32_t height);
+	void (*device_register_loss_callbacks)(
+		gs_device_t *device, const struct gs_device_loss *callbacks);
+	void (*device_unregister_loss_callbacks)(gs_device_t *device,
+						 void *data);
+#elif __linux__
+	struct gs_texture *(*device_texture_create_from_dmabuf)(
+		gs_device_t *device, unsigned int width, unsigned int height,
+		uint32_t drm_format, enum gs_color_format color_format,
+		uint32_t n_planes, const int *fds, const uint32_t *strides,
+		const uint32_t *offsets, const uint64_t *modifiers);
+	bool (*device_query_dmabuf_capabilities)(
+		gs_device_t *device, enum gs_dmabuf_flags *dmabuf_flags,
+		uint32_t **drm_formats, size_t *n_formats);
+	bool (*device_query_dmabuf_modifiers_for_format)(gs_device_t *device,
+							 uint32_t drm_format,
+							 uint64_t **modifiers,
+							 size_t *n_modifiers);
 #endif
 };
 
@@ -306,6 +353,7 @@ struct blend_state {
 	enum gs_blend_type dest_c;
 	enum gs_blend_type src_a;
 	enum gs_blend_type dest_a;
+	enum gs_blend_op_type op;
 };
 
 struct graphics_subsystem {
@@ -339,4 +387,6 @@ struct graphics_subsystem {
 
 	struct blend_state cur_blend_state;
 	DARRAY(struct blend_state) blend_state_stack;
+
+	bool linear_srgb;
 };

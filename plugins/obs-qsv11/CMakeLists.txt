@@ -1,3 +1,10 @@
+option(ENABLE_QSV11 "Build Intel QSV11 Hardware Encoder." TRUE)
+
+if(NOT ENABLE_QSV11)
+	message(STATUS "NOT building Intel QSV11 Hardware Encoder.")
+	return()
+endif()
+
 project(obs-qsv11)
 
 include_directories(libmfx/include/msdk/include)
@@ -8,6 +15,7 @@ set(obs-qsv11_libmfx_SOURCES
 	libmfx/src/mfx_critical_section.cpp
 	libmfx/src/mfx_dispatcher.cpp
 	libmfx/src/mfx_dispatcher_log.cpp
+	libmfx/src/mfx_driver_store_loader.cpp
 	libmfx/src/mfx_dxva2_device.cpp
 	libmfx/src/mfx_function_table.cpp
 	libmfx/src/mfx_library_iterator.cpp
@@ -18,6 +26,7 @@ set(obs-qsv11_libmfx_SOURCES
 	)
 
 set(obs-qsv11_libmfx_HEADERS
+	libmfx/include/msdk/include/mfxadapter.h
 	libmfx/include/msdk/include/mfxastructures.h
 	libmfx/include/msdk/include/mfxaudio.h
 	libmfx/include/msdk/include/mfxaudio++.h
@@ -36,6 +45,7 @@ set(obs-qsv11_libmfx_HEADERS
 	libmfx/include/mfx_dispatcher.h
 	libmfx/include/mfx_dispatcher_defs.h
 	libmfx/include/mfx_dispatcher_log.h
+	libmfx/include/mfx_driver_store_loader.h
 	libmfx/include/mfx_dxva2_device.h
 	libmfx/include/mfx_exposed_functions_list.h
 	libmfx/include/mfx_library_iterator.h
@@ -57,6 +67,13 @@ set(obs-qsv11_SOURCES
 	QSV_Encoder_Internal.cpp
 	obs-qsv11.c
 	obs-qsv11-plugin-main.c)
+
+if(WIN32)
+	set(MODULE_DESCRIPTION "OBS QSV encoder")
+	configure_file(${CMAKE_SOURCE_DIR}/cmake/winrc/obs-module.rc.in obs-qsv11.rc)
+	list(APPEND obs-qsv11_SOURCES
+		obs-qsv11.rc)
+endif()
 
 set(obs-qsv11_HEADERS
 	bits/linux_defs.h
@@ -80,9 +97,11 @@ target_link_libraries(obs-qsv11
 	d3d11
 	dxva2
 	dxgi
+	dxguid
 	)
 
 target_compile_definitions(obs-qsv11 PRIVATE DX11_D3D)
+set_target_properties(obs-qsv11 PROPERTIES FOLDER "plugins")
 
 source_group("obs-qsv11\\Source Files" FILES ${obs-qsv11_SOURCES})
 source_group("obs-qsv11\\Header Files" FILES ${obs-qsv11_HEADERS})

@@ -33,6 +33,7 @@ EXPORT int device_create(gs_device_t **device, uint32_t adapter);
 EXPORT void device_destroy(gs_device_t *device);
 EXPORT void device_enter_context(gs_device_t *device);
 EXPORT void device_leave_context(gs_device_t *device);
+EXPORT void *device_get_device_obj(gs_device_t *device);
 EXPORT gs_swapchain_t *device_swapchain_create(gs_device_t *device,
 					       const struct gs_init_data *data);
 EXPORT void device_resize(gs_device_t *device, uint32_t x, uint32_t y);
@@ -51,7 +52,8 @@ device_cubetexture_create(gs_device_t *device, uint32_t size,
 EXPORT gs_texture_t *
 device_voltexture_create(gs_device_t *device, uint32_t width, uint32_t height,
 			 uint32_t depth, enum gs_color_format color_format,
-			 uint32_t levels, const uint8_t **data, uint32_t flags);
+			 uint32_t levels, const uint8_t *const *data,
+			 uint32_t flags);
 EXPORT gs_zstencil_t *device_zstencil_create(gs_device_t *device,
 					     uint32_t width, uint32_t height,
 					     enum gs_zstencil_format format);
@@ -76,6 +78,8 @@ EXPORT gs_indexbuffer_t *device_indexbuffer_create(gs_device_t *device,
 						   enum gs_index_type type,
 						   void *indices, size_t num,
 						   uint32_t flags);
+EXPORT gs_timer_t *device_timer_create(gs_device_t *device);
+EXPORT gs_timer_range_t *device_timer_range_create(gs_device_t *device);
 EXPORT enum gs_texture_type
 device_get_texture_type(const gs_texture_t *texture);
 EXPORT void device_load_vertexbuffer(gs_device_t *device,
@@ -84,6 +88,8 @@ EXPORT void device_load_indexbuffer(gs_device_t *device,
 				    gs_indexbuffer_t *indexbuffer);
 EXPORT void device_load_texture(gs_device_t *device, gs_texture_t *tex,
 				int unit);
+EXPORT void device_load_texture_srgb(gs_device_t *device, gs_texture_t *tex,
+				     int unit);
 EXPORT void device_load_samplerstate(gs_device_t *device,
 				     gs_samplerstate_t *samplerstate, int unit);
 EXPORT void device_load_vertexshader(gs_device_t *device,
@@ -101,6 +107,8 @@ EXPORT void device_set_render_target(gs_device_t *device, gs_texture_t *tex,
 EXPORT void device_set_cube_render_target(gs_device_t *device,
 					  gs_texture_t *cubetex, int side,
 					  gs_zstencil_t *zstencil);
+EXPORT void device_enable_framebuffer_srgb(gs_device_t *device, bool enable);
+EXPORT bool device_framebuffer_srgb_enabled(gs_device_t *device);
 EXPORT void device_copy_texture(gs_device_t *device, gs_texture_t *dst,
 				gs_texture_t *src);
 EXPORT void device_copy_texture_region(gs_device_t *device, gs_texture_t *dst,
@@ -110,6 +118,7 @@ EXPORT void device_copy_texture_region(gs_device_t *device, gs_texture_t *dst,
 				       uint32_t src_h);
 EXPORT void device_stage_texture(gs_device_t *device, gs_stagesurf_t *dst,
 				 gs_texture_t *src);
+EXPORT void device_begin_frame(gs_device_t *device);
 EXPORT void device_begin_scene(gs_device_t *device);
 EXPORT void device_draw(gs_device_t *device, enum gs_draw_mode draw_mode,
 			uint32_t start_vert, uint32_t num_verts);
@@ -136,6 +145,8 @@ EXPORT void device_blend_function_separate(gs_device_t *device,
 					   enum gs_blend_type dest_c,
 					   enum gs_blend_type src_a,
 					   enum gs_blend_type dest_a);
+EXPORT void device_blend_op(gs_device_t *device, enum gs_blend_op_type op);
+
 EXPORT void device_depth_function(gs_device_t *device, enum gs_depth_test test);
 EXPORT void device_stencil_function(gs_device_t *device,
 				    enum gs_stencil_side side,
@@ -160,6 +171,26 @@ EXPORT void device_debug_marker_begin(gs_device_t *device,
 				      const char *markername,
 				      const float color[4]);
 EXPORT void device_debug_marker_end(gs_device_t *device);
+
+#if __linux__
+
+EXPORT gs_texture_t *device_texture_create_from_dmabuf(
+	gs_device_t *device, unsigned int width, unsigned int height,
+	uint32_t drm_format, enum gs_color_format color_format,
+	uint32_t n_planes, const int *fds, const uint32_t *strides,
+	const uint32_t *offsets, const uint64_t *modifiers);
+
+EXPORT bool
+device_query_dmabuf_capabilities(gs_device_t *device,
+				 enum gs_dmabuf_flags *gs_dmabuf_flags,
+				 uint32_t **drm_formats, size_t *n_formats);
+
+EXPORT bool device_query_dmabuf_modifiers_for_format(gs_device_t *device,
+						     uint32_t drm_format,
+						     uint64_t **modifiers,
+						     size_t *n_modifiers);
+
+#endif
 
 #ifdef __cplusplus
 }

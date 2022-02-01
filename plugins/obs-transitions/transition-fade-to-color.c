@@ -105,13 +105,19 @@ static void fade_to_color_callback(void *data, gs_texture_t *a, gs_texture_t *b,
 
 	float swp = t < fade_to_color->switch_point ? sa : 1.0f - sb;
 
-	gs_effect_set_texture(fade_to_color->ep_tex,
-			      t < fade_to_color->switch_point ? a : b);
-	gs_effect_set_float(fade_to_color->ep_swp, swp);
+	gs_texture_t *const tex = (t < fade_to_color->switch_point) ? a : b;
+
+	const bool previous = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(true);
+
+	gs_effect_set_texture(fade_to_color->ep_tex, tex);
 	gs_effect_set_vec4(fade_to_color->ep_color, &fade_to_color->color);
+	gs_effect_set_float(fade_to_color->ep_swp, swp);
 
 	while (gs_effect_loop(fade_to_color->effect, "FadeToColor"))
 		gs_draw_sprite(NULL, 0, cx, cy);
+
+	gs_enable_framebuffer_srgb(previous);
 }
 
 static void fade_to_color_video_render(void *data, gs_effect_t *effect)
@@ -154,8 +160,9 @@ static obs_properties_t *fade_to_color_properties(void *data)
 	obs_properties_t *props = obs_properties_create();
 
 	obs_properties_add_color(props, S_COLOR, S_COLOR_TEXT);
-	obs_properties_add_int_slider(props, S_SWITCH_POINT,
-				      S_SWITCH_POINT_TEXT, 0, 100, 1);
+	obs_property_t *p = obs_properties_add_int_slider(
+		props, S_SWITCH_POINT, S_SWITCH_POINT_TEXT, 0, 100, 1);
+	obs_property_int_set_suffix(p, "%");
 
 	UNUSED_PARAMETER(data);
 	return props;

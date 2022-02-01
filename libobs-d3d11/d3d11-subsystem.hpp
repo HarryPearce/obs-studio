@@ -25,8 +25,7 @@
 #include <memory>
 
 #include <windows.h>
-#include <dxgi.h>
-#include <dxgi1_2.h>
+#include <dxgi1_6.h>
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 
@@ -59,7 +58,7 @@ static inline uint32_t GetWinVer()
 	return (ver.major << 8) | ver.minor;
 }
 
-static inline DXGI_FORMAT ConvertGSTextureFormat(gs_color_format format)
+static inline DXGI_FORMAT ConvertGSTextureFormatResource(gs_color_format format)
 {
 	switch (format) {
 	case GS_UNKNOWN:
@@ -69,11 +68,11 @@ static inline DXGI_FORMAT ConvertGSTextureFormat(gs_color_format format)
 	case GS_R8:
 		return DXGI_FORMAT_R8_UNORM;
 	case GS_RGBA:
-		return DXGI_FORMAT_R8G8B8A8_UNORM;
+		return DXGI_FORMAT_R8G8B8A8_TYPELESS;
 	case GS_BGRX:
-		return DXGI_FORMAT_B8G8R8X8_UNORM;
+		return DXGI_FORMAT_B8G8R8X8_TYPELESS;
 	case GS_BGRA:
-		return DXGI_FORMAT_B8G8R8A8_UNORM;
+		return DXGI_FORMAT_B8G8R8A8_TYPELESS;
 	case GS_R10G10B10A2:
 		return DXGI_FORMAT_R10G10B10A2_UNORM;
 	case GS_RGBA16:
@@ -100,9 +99,46 @@ static inline DXGI_FORMAT ConvertGSTextureFormat(gs_color_format format)
 		return DXGI_FORMAT_BC3_UNORM;
 	case GS_R8G8:
 		return DXGI_FORMAT_R8G8_UNORM;
+	case GS_RGBA_UNORM:
+		return DXGI_FORMAT_R8G8B8A8_UNORM;
+	case GS_BGRX_UNORM:
+		return DXGI_FORMAT_B8G8R8X8_UNORM;
+	case GS_BGRA_UNORM:
+		return DXGI_FORMAT_B8G8R8A8_UNORM;
+	case GS_RG16:
+		return DXGI_FORMAT_R16G16_UNORM;
 	}
 
 	return DXGI_FORMAT_UNKNOWN;
+}
+
+static inline DXGI_FORMAT ConvertGSTextureFormatView(gs_color_format format)
+{
+	switch (format) {
+	case GS_RGBA:
+		return DXGI_FORMAT_R8G8B8A8_UNORM;
+	case GS_BGRX:
+		return DXGI_FORMAT_B8G8R8X8_UNORM;
+	case GS_BGRA:
+		return DXGI_FORMAT_B8G8R8A8_UNORM;
+	default:
+		return ConvertGSTextureFormatResource(format);
+	}
+}
+
+static inline DXGI_FORMAT
+ConvertGSTextureFormatViewLinear(gs_color_format format)
+{
+	switch (format) {
+	case GS_RGBA:
+		return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+	case GS_BGRX:
+		return DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
+	case GS_BGRA:
+		return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+	default:
+		return ConvertGSTextureFormatResource(format);
+	}
 }
 
 static inline gs_color_format ConvertDXGITextureFormat(DXGI_FORMAT format)
@@ -114,11 +150,11 @@ static inline gs_color_format ConvertDXGITextureFormat(DXGI_FORMAT format)
 		return GS_R8;
 	case DXGI_FORMAT_R8G8_UNORM:
 		return GS_R8G8;
-	case DXGI_FORMAT_R8G8B8A8_UNORM:
+	case DXGI_FORMAT_R8G8B8A8_TYPELESS:
 		return GS_RGBA;
-	case DXGI_FORMAT_B8G8R8X8_UNORM:
+	case DXGI_FORMAT_B8G8R8X8_TYPELESS:
 		return GS_BGRX;
-	case DXGI_FORMAT_B8G8R8A8_UNORM:
+	case DXGI_FORMAT_B8G8R8A8_TYPELESS:
 		return GS_BGRA;
 	case DXGI_FORMAT_R10G10B10A2_UNORM:
 		return GS_R10G10B10A2;
@@ -144,6 +180,14 @@ static inline gs_color_format ConvertDXGITextureFormat(DXGI_FORMAT format)
 		return GS_DXT3;
 	case DXGI_FORMAT_BC3_UNORM:
 		return GS_DXT5;
+	case DXGI_FORMAT_R8G8B8A8_UNORM:
+		return GS_RGBA_UNORM;
+	case DXGI_FORMAT_B8G8R8X8_UNORM:
+		return GS_BGRX_UNORM;
+	case DXGI_FORMAT_B8G8R8A8_UNORM:
+		return GS_BGRA_UNORM;
+	case DXGI_FORMAT_R16G16_UNORM:
+		return GS_RG16;
 	}
 
 	return GS_UNKNOWN;
@@ -241,6 +285,24 @@ static inline D3D11_BLEND ConvertGSBlendType(gs_blend_type type)
 	return D3D11_BLEND_ONE;
 }
 
+static inline D3D11_BLEND_OP ConvertGSBlendOpType(gs_blend_op_type type)
+{
+	switch (type) {
+	case GS_BLEND_OP_ADD:
+		return D3D11_BLEND_OP_ADD;
+	case GS_BLEND_OP_SUBTRACT:
+		return D3D11_BLEND_OP_SUBTRACT;
+	case GS_BLEND_OP_REVERSE_SUBTRACT:
+		return D3D11_BLEND_OP_REV_SUBTRACT;
+	case GS_BLEND_OP_MIN:
+		return D3D11_BLEND_OP_MIN;
+	case GS_BLEND_OP_MAX:
+		return D3D11_BLEND_OP_MAX;
+	}
+
+	return D3D11_BLEND_OP_ADD;
+}
+
 static inline D3D11_CULL_MODE ConvertGSCullMode(gs_cull_mode mode)
 {
 	switch (mode) {
@@ -292,6 +354,9 @@ enum class gs_type {
 	gs_pixel_shader,
 	gs_duplicator,
 	gs_swap_chain,
+	gs_timer,
+	gs_timer_range,
+	gs_texture_3d,
 };
 
 struct gs_obj {
@@ -320,9 +385,8 @@ struct gs_vertex_buffer : gs_obj {
 
 	void FlushBuffer(ID3D11Buffer *buffer, void *array, size_t elementSize);
 
-	void MakeBufferList(gs_vertex_shader *shader,
-			    vector<ID3D11Buffer *> &buffers,
-			    vector<uint32_t> &strides);
+	UINT MakeBufferList(gs_vertex_shader *shader, ID3D11Buffer **buffers,
+			    uint32_t *strides);
 
 	void InitBuffer(const size_t elementSize, const size_t numVerts,
 			void *array, ID3D11Buffer **buffer);
@@ -373,13 +437,40 @@ struct gs_index_buffer : gs_obj {
 			void *indices, size_t num, uint32_t flags);
 };
 
+struct gs_timer : gs_obj {
+	ComPtr<ID3D11Query> query_begin;
+	ComPtr<ID3D11Query> query_end;
+
+	void Rebuild(ID3D11Device *dev);
+
+	inline void Release()
+	{
+		query_begin.Release();
+		query_end.Release();
+	}
+
+	gs_timer(gs_device_t *device);
+};
+
+struct gs_timer_range : gs_obj {
+	ComPtr<ID3D11Query> query_disjoint;
+
+	void Rebuild(ID3D11Device *dev);
+
+	inline void Release() { query_disjoint.Release(); }
+
+	gs_timer_range(gs_device_t *device);
+};
+
 struct gs_texture : gs_obj {
 	gs_texture_type type;
 	uint32_t levels;
 	gs_color_format format;
 
 	ComPtr<ID3D11ShaderResourceView> shaderRes;
-	D3D11_SHADER_RESOURCE_VIEW_DESC resourceDesc = {};
+	ComPtr<ID3D11ShaderResourceView> shaderResLinear;
+	D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc{};
+	D3D11_SHADER_RESOURCE_VIEW_DESC viewDescLinear{};
 
 	void Rebuild(ID3D11Device *dev);
 
@@ -409,11 +500,14 @@ struct gs_texture : gs_obj {
 struct gs_texture_2d : gs_texture {
 	ComPtr<ID3D11Texture2D> texture;
 	ComPtr<ID3D11RenderTargetView> renderTarget[6];
+	ComPtr<ID3D11RenderTargetView> renderTargetLinear[6];
 	ComPtr<IDXGISurface1> gdiSurface;
 
 	uint32_t width = 0, height = 0;
 	uint32_t flags = 0;
-	DXGI_FORMAT dxgiFormat = DXGI_FORMAT_UNKNOWN;
+	DXGI_FORMAT dxgiFormatResource = DXGI_FORMAT_UNKNOWN;
+	DXGI_FORMAT dxgiFormatView = DXGI_FORMAT_UNKNOWN;
+	DXGI_FORMAT dxgiFormatViewLinear = DXGI_FORMAT_UNKNOWN;
 	bool isRenderTarget = false;
 	bool isGDICompatible = false;
 	bool isDynamic = false;
@@ -431,10 +525,10 @@ struct gs_texture_2d : gs_texture {
 	D3D11_TEXTURE2D_DESC td = {};
 
 	void InitSRD(vector<D3D11_SUBRESOURCE_DATA> &srd);
-	void InitTexture(const uint8_t **data);
+	void InitTexture(const uint8_t *const *data);
 	void InitResourceView();
 	void InitRenderTargets();
-	void BackupTexture(const uint8_t **data);
+	void BackupTexture(const uint8_t *const *data);
 	void GetSharedHandle(IDXGIResource *dxgi_res);
 
 	void RebuildSharedTextureFallback();
@@ -445,23 +539,75 @@ struct gs_texture_2d : gs_texture {
 	inline void Release()
 	{
 		texture.Release();
-		for (auto &rt : renderTarget)
+		for (ComPtr<ID3D11RenderTargetView> &rt : renderTarget)
+			rt.Release();
+		for (ComPtr<ID3D11RenderTargetView> &rt : renderTargetLinear)
 			rt.Release();
 		gdiSurface.Release();
 		shaderRes.Release();
+		shaderResLinear.Release();
 	}
 
 	inline gs_texture_2d() : gs_texture(GS_TEXTURE_2D, 0, GS_UNKNOWN) {}
 
 	gs_texture_2d(gs_device_t *device, uint32_t width, uint32_t height,
 		      gs_color_format colorFormat, uint32_t levels,
-		      const uint8_t **data, uint32_t flags,
+		      const uint8_t *const *data, uint32_t flags,
 		      gs_texture_type type, bool gdiCompatible,
 		      bool nv12 = false);
 
 	gs_texture_2d(gs_device_t *device, ID3D11Texture2D *nv12,
 		      uint32_t flags);
-	gs_texture_2d(gs_device_t *device, uint32_t handle);
+	gs_texture_2d(gs_device_t *device, uint32_t handle,
+		      bool ntHandle = false);
+	gs_texture_2d(gs_device_t *device, ID3D11Texture2D *obj);
+};
+
+struct gs_texture_3d : gs_texture {
+	ComPtr<ID3D11Texture3D> texture;
+
+	uint32_t width = 0, height = 0, depth = 0;
+	uint32_t flags = 0;
+	DXGI_FORMAT dxgiFormatResource = DXGI_FORMAT_UNKNOWN;
+	DXGI_FORMAT dxgiFormatView = DXGI_FORMAT_UNKNOWN;
+	DXGI_FORMAT dxgiFormatViewLinear = DXGI_FORMAT_UNKNOWN;
+	bool isDynamic = false;
+	bool isShared = false;
+	bool genMipmaps = false;
+	uint32_t sharedHandle = GS_INVALID_HANDLE;
+
+	bool chroma = false;
+	bool acquired = false;
+
+	vector<vector<uint8_t>> data;
+	vector<D3D11_SUBRESOURCE_DATA> srd;
+	D3D11_TEXTURE3D_DESC td = {};
+
+	void InitSRD(vector<D3D11_SUBRESOURCE_DATA> &srd);
+	void InitTexture(const uint8_t *const *data);
+	void InitResourceView();
+	void BackupTexture(const uint8_t *const *data);
+	void GetSharedHandle(IDXGIResource *dxgi_res);
+
+	void RebuildSharedTextureFallback();
+	void Rebuild(ID3D11Device *dev);
+	void RebuildNV12_Y(ID3D11Device *dev);
+	void RebuildNV12_UV(ID3D11Device *dev);
+
+	inline void Release()
+	{
+		texture.Release();
+		shaderRes.Release();
+	}
+
+	inline gs_texture_3d() : gs_texture(GS_TEXTURE_3D, 0, GS_UNKNOWN) {}
+
+	gs_texture_3d(gs_device_t *device, uint32_t width, uint32_t height,
+		      uint32_t depth, gs_color_format colorFormat,
+		      uint32_t levels, const uint8_t *const *data,
+		      uint32_t flags);
+
+	gs_texture_3d(gs_device_t *device, uint32_t handle);
 };
 
 struct gs_zstencil_buffer : gs_obj {
@@ -670,14 +816,15 @@ struct gs_pixel_shader : gs_shader {
 };
 
 struct gs_swap_chain : gs_obj {
-	uint32_t numBuffers;
 	HWND hwnd;
 	gs_init_data initData;
 	DXGI_SWAP_CHAIN_DESC swapDesc = {};
+	UINT presentFlags = 0;
 
 	gs_texture_2d target;
 	gs_zstencil_buffer zs;
 	ComPtr<IDXGISwapChain> swap;
+	HANDLE hWaitable = NULL;
 
 	void InitTarget(uint32_t cx, uint32_t cy);
 	void InitZStencilBuffer(uint32_t cx, uint32_t cy);
@@ -690,10 +837,15 @@ struct gs_swap_chain : gs_obj {
 	{
 		target.Release();
 		zs.Release();
-		swap.Release();
+		if (hWaitable) {
+			CloseHandle(hWaitable);
+			hWaitable = NULL;
+		}
+		swap.Clear();
 	}
 
 	gs_swap_chain(gs_device *device, const gs_init_data *data);
+	virtual ~gs_swap_chain();
 };
 
 struct BlendState {
@@ -702,6 +854,7 @@ struct BlendState {
 	gs_blend_type destFactorC;
 	gs_blend_type srcFactorA;
 	gs_blend_type destFactorA;
+	gs_blend_op_type op;
 
 	bool redEnabled;
 	bool greenEnabled;
@@ -714,6 +867,7 @@ struct BlendState {
 		  destFactorC(GS_BLEND_INVSRCALPHA),
 		  srcFactorA(GS_BLEND_ONE),
 		  destFactorA(GS_BLEND_INVSRCALPHA),
+		  op(GS_BLEND_OP_ADD),
 		  redEnabled(true),
 		  greenEnabled(true),
 		  blueEnabled(true),
@@ -835,6 +989,8 @@ struct gs_device {
 	gs_texture_2d *curRenderTarget = nullptr;
 	gs_zstencil_buffer *curZStencilBuffer = nullptr;
 	int curRenderSide = 0;
+	bool curFramebufferSrgb = false;
+	bool curFramebufferInvalidate = false;
 	gs_texture *curTextures[GS_MAX_TEXTURES];
 	gs_sampler_state *curSamplers[GS_MAX_TEXTURES];
 	gs_vertex_buffer *curVertexBuffer = nullptr;
@@ -873,10 +1029,13 @@ struct gs_device {
 	matrix4 curViewMatrix;
 	matrix4 curViewProjMatrix;
 
+	vector<gs_device_loss> loss_callbacks;
 	gs_obj *first_obj = nullptr;
 
 	void InitCompiler();
-	void InitFactory(uint32_t adapterIdx);
+	void InitFactory();
+	void ReorderAdapters(uint32_t &adapterIdx);
+	void InitAdapter(uint32_t adapterIdx);
 	void InitDevice(uint32_t adapterIdx);
 
 	ID3D11DepthStencilState *AddZStencilState();
@@ -893,6 +1052,8 @@ struct gs_device {
 			    uint32_t src_y, uint32_t src_w, uint32_t src_h);
 
 	void UpdateViewProjMatrix();
+
+	void FlushOutputViews();
 
 	void RebuildDevice();
 

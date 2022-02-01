@@ -12,7 +12,7 @@
 
 #include <util/windows/WinHandle.hpp>
 #include <util/util.hpp>
-#include <jansson.h>
+#include <json11.hpp>
 #include <blake2.h>
 
 #include <time.h>
@@ -20,7 +20,15 @@
 #include <winhttp.h>
 #include <shellapi.h>
 
+#ifdef BROWSER_AVAILABLE
+#include <browser-panel.hpp>
+#endif
+
 using namespace std;
+using namespace json11;
+
+struct QCef;
+extern QCef *cef;
 
 /* ------------------------------------------------------------------------ */
 
@@ -146,7 +154,7 @@ try {
 
 	return true;
 
-} catch (string text) {
+} catch (string &text) {
 	blog(LOG_WARNING, "%s: %s", __FUNCTION__, text.c_str());
 	return false;
 }
@@ -174,7 +182,7 @@ try {
 
 	return true;
 
-} catch (string text) {
+} catch (string &text) {
 	blog(LOG_WARNING, "%s: %s", __FUNCTION__, text.c_str());
 	return false;
 }
@@ -229,7 +237,7 @@ try {
 
 	return true;
 
-} catch (string text) {
+} catch (string &text) {
 	blog(LOG_DEBUG, "%s: %s", __FUNCTION__, text.c_str());
 	return false;
 }
@@ -267,14 +275,14 @@ static bool VerifyDigitalSignature(uint8_t *buf, size_t len, uint8_t *sig,
 
 	if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
 				 binaryKey, binaryKeyLen,
-				 CRYPT_ENCODE_ALLOC_FLAG, nullptr, &publicPBLOB,
+				 CRYPT_DECODE_ALLOC_FLAG, nullptr, &publicPBLOB,
 				 &iPBLOBSize))
 		return false;
 
 	if (!CryptDecodeObjectEx(X509_ASN_ENCODING, RSA_CSP_PUBLICKEYBLOB,
 				 publicPBLOB->PublicKey.pbData,
 				 publicPBLOB->PublicKey.cbData,
-				 CRYPT_ENCODE_ALLOC_FLAG, nullptr,
+				 CRYPT_DECODE_ALLOC_FLAG, nullptr,
 				 &rsaPublicBLOB, &rsaPublicBLOBSize))
 		return false;
 
@@ -332,7 +340,7 @@ try {
 
 	return true;
 
-} catch (string text) {
+} catch (string &text) {
 	blog(LOG_WARNING, "%s: %s", __FUNCTION__, text.c_str());
 	return false;
 }
@@ -362,7 +370,7 @@ try {
 	string data;
 
 	bool success = GetRemoteFile(url, data, error, &responseCode, nullptr,
-				     nullptr, extraHeaders, &signature);
+				     "", nullptr, extraHeaders, &signature);
 
 	if (!success || (responseCode != 200 && responseCode != 304)) {
 		if (responseCode == 404)
@@ -384,7 +392,7 @@ try {
 
 	return true;
 
-} catch (string text) {
+} catch (string &text) {
 	blog(LOG_WARNING, "%s: %s", __FUNCTION__, text.c_str());
 	return false;
 }
@@ -395,31 +403,31 @@ static bool ParseUpdateManifest(const char *manifest, bool *updatesAvailable,
 				string &notes_str, int &updateVer)
 try {
 
-	json_error_t error;
-	Json root(json_loads(manifest, 0, &error));
-	if (!root)
-		throw strprintf("Failed reading json string (%d): %s",
-				error.line, error.text);
+	string error;
+	Json root = Json::parse(manifest, error);
+	if (!error.empty())
+		throw strprintf("Failed reading json string: %s",
+				error.c_str());
 
-	if (!json_is_object(root.get()))
+	if (!root.is_object())
 		throw string("Root of manifest is not an object");
 
-	int major = root.GetInt("version_major");
-	int minor = root.GetInt("version_minor");
-	int patch = root.GetInt("version_patch");
+	int major = root["version_major"].int_value();
+	int minor = root["version_minor"].int_value();
+	int patch = root["version_patch"].int_value();
 
 	if (major == 0)
 		throw strprintf("Invalid version number: %d.%d.%d", major,
 				minor, patch);
 
-	json_t *notes = json_object_get(root, "notes");
-	if (!json_is_string(notes))
+	const Json &notes = root["notes"];
+	if (!notes.is_string())
 		throw string("'notes' value invalid");
 
-	notes_str = json_string_value(notes);
+	notes_str = notes.string_value();
 
-	json_t *packages = json_object_get(root, "packages");
-	if (!json_is_array(packages))
+	const Json &packages = root["packages"];
+	if (!packages.is_array())
 		throw string("'packages' value invalid");
 
 	int cur_ver = LIBOBS_API_VER;
@@ -430,7 +438,7 @@ try {
 
 	return true;
 
-} catch (string text) {
+} catch (string &text) {
 	blog(LOG_WARNING, "%s: %s", __FUNCTION__, text.c_str());
 	return false;
 }
@@ -503,26 +511,6 @@ int AutoUpdateThread::queryUpdate(bool localManualUpdate, const char *text_utf8)
 	return ret;
 }
 
-static bool IsFileInUse(const wstring &file)
-{
-	WinHandle f = CreateFile(file.c_str(), GENERIC_WRITE, 0, nullptr,
-				 OPEN_EXISTING, 0, nullptr);
-	if (!f.Valid()) {
-		int err = GetLastError();
-		if (err == ERROR_SHARING_VIOLATION ||
-		    err == ERROR_LOCK_VIOLATION)
-			return true;
-	}
-
-	return false;
-}
-
-static bool IsGameCaptureInUse()
-{
-	wstring path = L"..\\..\\data\\obs-plugins\\win-capture\\graphics-hook";
-	return IsFileInUse(path + L"32.dll") || IsFileInUse(path + L"64.dll");
-}
-
 void AutoUpdateThread::run()
 try {
 	long responseCode;
@@ -545,29 +533,6 @@ try {
 
 	BPtr<char> manifestPath =
 		GetConfigPathPtr("obs-studio\\updates\\manifest.json");
-
-	auto ActiveOrGameCaptureLocked = [this]() {
-		if (obs_video_active()) {
-			if (manualUpdate)
-				info(QTStr("Updater.Running.Title"),
-				     QTStr("Updater.Running.Text"));
-			return true;
-		}
-		if (IsGameCaptureInUse()) {
-			if (manualUpdate)
-				info(QTStr("Updater.GameCaptureActive.Title"),
-				     QTStr("Updater.GameCaptureActive.Text"));
-			return true;
-		}
-
-		return false;
-	};
-
-	/* ----------------------------------- *
-	 * warn if running or gc locked        */
-
-	if (ActiveOrGameCaptureLocked())
-		return;
 
 	/* ----------------------------------- *
 	 * create signature provider           */
@@ -605,7 +570,7 @@ try {
 	 * get manifest from server            */
 
 	success = GetRemoteFile(WIN_MANIFEST_URL, text, error, &responseCode,
-				nullptr, nullptr, extraHeaders, &signature);
+				nullptr, "", nullptr, extraHeaders, &signature);
 
 	if (!success || (responseCode != 200 && responseCode != 304)) {
 		if (responseCode == 404)
@@ -663,12 +628,6 @@ try {
 	int skipUpdateVer = config_get_int(GetGlobalConfig(), "General",
 					   "SkipUpdateVersion");
 	if (!manualUpdate && updateVer == skipUpdateVer)
-		return;
-
-	/* ----------------------------------- *
-	 * warn again if running or gc locked  */
-
-	if (ActiveOrGameCaptureLocked())
 		return;
 
 	/* ----------------------------------- *
@@ -750,7 +709,7 @@ try {
 
 	QMetaObject::invokeMethod(App()->GetMainWindow(), "close");
 
-} catch (string text) {
+} catch (string &text) {
 	blog(LOG_WARNING, "%s: %s", __FUNCTION__, text.c_str());
 }
 
@@ -807,7 +766,7 @@ try {
 	 * get json from server                */
 
 	success = GetRemoteFile(WIN_WHATSNEW_URL, text, error, &responseCode,
-				nullptr, nullptr, extraHeaders, &signature);
+				nullptr, "", nullptr, extraHeaders, &signature);
 
 	if (!success || (responseCode != 200 && responseCode != 304)) {
 		if (responseCode == 404)
@@ -845,6 +804,16 @@ try {
 
 	emit Result(QString::fromUtf8(text.c_str()));
 
-} catch (string text) {
+} catch (string &text) {
 	blog(LOG_WARNING, "%s: %s", __FUNCTION__, text.c_str());
+}
+
+/* ------------------------------------------------------------------------ */
+
+void WhatsNewBrowserInitThread::run()
+{
+#ifdef BROWSER_AVAILABLE
+	cef->wait_for_browser_init();
+#endif
+	emit Result(url);
 }

@@ -67,6 +67,8 @@ typedef HINSTANCE(WINAPI *SHELLEXECUTEA)(HWND hwnd, LPCTSTR operation,
 					 LPCTSTR file, LPCTSTR parameters,
 					 LPCTSTR directory, INT show_flags);
 
+typedef HRESULT(WINAPI *GETTHREADDESCRIPTION)(HANDLE thread, PWSTR *desc);
+
 struct stack_trace {
 	CONTEXT context;
 	DWORD64 instruction_ptr;
@@ -182,8 +184,10 @@ static inline void init_sym_info(struct exception_handler_data *data)
 		data->sym_refresh_module_list(data->process);
 
 	data->sym_info = LocalAlloc(LPTR, sizeof(*data->sym_info) + 256);
-	data->sym_info->SizeOfStruct = sizeof(SYMBOL_INFO);
-	data->sym_info->MaxNameLen = 256;
+	if (data->sym_info) {
+		data->sym_info->SizeOfStruct = sizeof(SYMBOL_INFO);
+		data->sym_info->MaxNameLen = 256;
+	}
 }
 
 static inline void init_version_info(struct exception_handler_data *data)
@@ -246,6 +250,8 @@ static inline void init_module_info(struct exception_handler_data *data)
 		data);
 }
 
+extern const char *get_win_release_id();
+
 static inline void write_header(struct exception_handler_data *data)
 {
 	char date_time[80];
@@ -260,18 +266,20 @@ static inline void write_header(struct exception_handler_data *data)
 	else
 		obs_bitness = "32";
 
+	const char *release_id = get_win_release_id();
+
 	dstr_catf(&data->str,
 		  "Unhandled exception: %x\r\n"
 		  "Date/Time: %s\r\n"
 		  "Fault address: %" PRIX64 " (%s)\r\n"
 		  "libobs version: " OBS_VERSION " (%s-bit)\r\n"
-		  "Windows version: %d.%d build %d (revision: %d; "
+		  "Windows version: %d.%d build %d (release: %s; revision: %d; "
 		  "%s-bit)\r\n"
 		  "CPU: %s\r\n\r\n",
 		  data->exception->ExceptionRecord->ExceptionCode, date_time,
 		  data->main_trace.instruction_ptr, data->module_name.array,
 		  obs_bitness, data->win_version.major, data->win_version.minor,
-		  data->win_version.build, data->win_version.revis,
+		  data->win_version.build, release_id, data->win_version.revis,
 		  is_64_bit_windows() ? "64" : "32", data->cpu_info.array);
 }
 
@@ -329,12 +337,16 @@ static inline bool walk_stack(struct exception_handler_data *data,
 		p = module_info.name_utf8;
 	}
 
-	success = !!data->sym_from_addr(data->process,
-					trace->frame.AddrPC.Offset,
-					&func_offset, data->sym_info);
+	if (data->sym_info) {
+		success = !!data->sym_from_addr(data->process,
+						trace->frame.AddrPC.Offset,
+						&func_offset, data->sym_info);
 
-	if (success)
-		os_wcs_to_utf8(data->sym_info->Name, 0, sym_name, 256);
+		if (success)
+			os_wcs_to_utf8(data->sym_info->Name, 0, sym_name, 256);
+	} else {
+		success = false;
+	}
 
 #ifdef _WIN64
 #define SUCCESS_FORMAT                         \
@@ -387,6 +399,40 @@ static inline bool walk_stack(struct exception_handler_data *data,
 	"Arg1     Arg2     Arg3     Address\r\n"
 #endif
 
+static inline char *get_thread_name(HANDLE thread)
+{
+	static GETTHREADDESCRIPTION get_thread_desc = NULL;
+	static bool failed = false;
+
+	if (!get_thread_desc) {
+		if (failed) {
+			return NULL;
+		}
+
+		HMODULE k32 = LoadLibraryW(L"kernel32.dll");
+		get_thread_desc = (GETTHREADDESCRIPTION)GetProcAddress(
+			k32, "GetThreadDescription");
+		if (!get_thread_desc) {
+			failed = true;
+			return NULL;
+		}
+	}
+
+	wchar_t *w_name;
+	HRESULT hr = get_thread_desc(thread, &w_name);
+	if (FAILED(hr) || !w_name) {
+		return NULL;
+	}
+
+	struct dstr name = {0};
+	dstr_from_wcs(&name, w_name);
+	if (name.len)
+		dstr_insert_ch(&name, 0, ' ');
+	LocalFree(w_name);
+
+	return name.array;
+}
+
 static inline void write_thread_trace(struct exception_handler_data *data,
 				      THREADENTRY32 *entry, bool first_thread)
 {
@@ -394,6 +440,7 @@ static inline void write_thread_trace(struct exception_handler_data *data,
 	struct stack_trace trace = {0};
 	struct stack_trace *ptrace;
 	HANDLE thread;
+	char *thread_name;
 
 	if (first_thread != crash_thread)
 		return;
@@ -409,8 +456,13 @@ static inline void write_thread_trace(struct exception_handler_data *data,
 	GetThreadContext(thread, &trace.context);
 	init_instruction_data(&trace);
 
-	dstr_catf(&data->str, "\r\nThread %lX%s\r\n" TRACE_TOP,
-		  entry->th32ThreadID, crash_thread ? " (Crashed)" : "");
+	thread_name = get_thread_name(thread);
+
+	dstr_catf(&data->str, "\r\nThread %lX:%s%s\r\n" TRACE_TOP,
+		  entry->th32ThreadID, thread_name ? thread_name : "",
+		  crash_thread ? " (Crashed)" : "");
+
+	bfree(thread_name);
 
 	ptrace = crash_thread ? &data->main_trace : &trace;
 
@@ -497,7 +549,7 @@ static LONG CALLBACK exception_handler(PEXCEPTION_POINTERS exception)
 	inside_handler = true;
 
 	handle_exception(&data, exception);
-	bcrash(data.str.array);
+	bcrash("%s", data.str.array);
 	exception_handler_data_free(&data);
 
 	inside_handler = false;

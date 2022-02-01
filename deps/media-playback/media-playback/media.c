@@ -48,6 +48,12 @@ static inline enum video_format convert_pixel_format(int f)
 		return VIDEO_FORMAT_BGRA;
 	case AV_PIX_FMT_BGR0:
 		return VIDEO_FORMAT_BGRX;
+	case AV_PIX_FMT_YUVA420P:
+		return VIDEO_FORMAT_I40A;
+	case AV_PIX_FMT_YUVA422P:
+		return VIDEO_FORMAT_I42A;
+	case AV_PIX_FMT_YUVA444P:
+		return VIDEO_FORMAT_YUVA;
 	default:;
 	}
 
@@ -103,9 +109,21 @@ static inline enum speaker_layout convert_speaker_layout(uint8_t channels)
 	}
 }
 
-static inline enum video_colorspace convert_color_space(enum AVColorSpace s)
+static inline enum video_colorspace
+convert_color_space(enum AVColorSpace s, enum AVColorTransferCharacteristic trc)
 {
-	return s == AVCOL_SPC_BT709 ? VIDEO_CS_709 : VIDEO_CS_DEFAULT;
+	switch (s) {
+	case AVCOL_SPC_BT709:
+		return (trc == AVCOL_TRC_IEC61966_2_1) ? VIDEO_CS_SRGB
+						       : VIDEO_CS_709;
+	case AVCOL_SPC_FCC:
+	case AVCOL_SPC_BT470BG:
+	case AVCOL_SPC_SMPTE170M:
+	case AVCOL_SPC_SMPTE240M:
+		return VIDEO_CS_601;
+	default:
+		return VIDEO_CS_DEFAULT;
+	}
 }
 
 static inline enum video_range_type convert_color_range(enum AVColorRange r)
@@ -133,7 +151,7 @@ static int mp_media_next_packet(mp_media_t *media)
 
 	int ret = av_read_frame(media->fmt, &pkt);
 	if (ret < 0) {
-		if (ret != AVERROR_EOF)
+		if (ret != AVERROR_EOF && ret != AVERROR_EXIT)
 			blog(LOG_WARNING, "MP: av_read_frame failed: %s (%d)",
 			     av_err2str(ret), ret);
 		return ret;
@@ -199,7 +217,7 @@ static bool mp_media_init_scaling(mp_media_t *m)
 					  m->v.decoder->pix_fmt,
 					  m->v.decoder->width,
 					  m->v.decoder->height, m->scale_format,
-					  SWS_FAST_BILINEAR, NULL, NULL, NULL);
+					  SWS_POINT, NULL, NULL, NULL);
 	if (!m->swscale) {
 		blog(LOG_WARNING, "MP: Failed to initialize scaler");
 		return false;
@@ -210,7 +228,7 @@ static bool mp_media_init_scaling(mp_media_t *m)
 
 	int ret = av_image_alloc(m->scale_pic, m->scale_linesizes,
 				 m->v.decoder->width, m->v.decoder->height,
-				 m->scale_format, 1);
+				 m->scale_format, 32);
 	if (ret < 0) {
 		blog(LOG_WARNING, "MP: Failed to create scale pic data");
 		return false;
@@ -221,13 +239,20 @@ static bool mp_media_init_scaling(mp_media_t *m)
 
 static bool mp_media_prepare_frames(mp_media_t *m)
 {
+	bool actively_seeking = m->seek_next_ts && m->pause;
+
 	while (!mp_media_ready_to_start(m)) {
 		if (!m->eof) {
 			int ret = mp_media_next_packet(m);
-			if (ret == AVERROR_EOF)
-				m->eof = true;
-			else if (ret < 0)
+			if (ret == AVERROR_EOF || ret == AVERROR_EXIT) {
+				if (!actively_seeking) {
+					m->eof = true;
+				} else {
+					break;
+				}
+			} else if (ret < 0) {
 				return false;
+			}
 		}
 
 		if (m->has_video && !mp_decode_frame(&m->v))
@@ -276,9 +301,13 @@ static inline int64_t mp_media_get_base_pts(mp_media_t *m)
 	return base_ts;
 }
 
+/* maximum timestamp variance in nanoseconds */
+#define MAX_TS_VAR 2000000000LL
+
 static inline bool mp_media_can_play_frame(mp_media_t *m, struct mp_decode *d)
 {
-	return d->frame_ready && d->frame_pts <= m->next_pts_ns;
+	return d->frame_ready && (d->frame_pts <= m->next_pts_ns ||
+				  (d->frame_pts - m->next_pts_ns > MAX_TS_VAR));
 }
 
 static void mp_media_next_audio(mp_media_t *m)
@@ -301,6 +330,7 @@ static void mp_media_next_audio(mp_media_t *m)
 	audio.speakers = convert_speaker_layout(f->channels);
 	audio.format = convert_sample_format(f->format);
 	audio.frames = f->nb_samples;
+
 	audio.timestamp = m->base_ts + d->frame_pts - m->start_ts +
 			  m->play_sys_ts - base_sys_ts;
 
@@ -358,7 +388,7 @@ static void mp_media_next_video(mp_media_t *m, bool preload)
 		frame->data[0] -= frame->linesize[0] * (f->height - 1);
 
 	new_format = convert_pixel_format(m->scale_format);
-	new_space = convert_color_space(f->colorspace);
+	new_space = convert_color_space(f->colorspace, f->color_trc);
 	new_range = m->force_range == VIDEO_RANGE_DEFAULT
 			    ? convert_color_range(f->color_range)
 			    : m->force_range;
@@ -390,9 +420,11 @@ static void mp_media_next_video(mp_media_t *m, bool preload)
 
 	frame->timestamp = m->base_ts + d->frame_pts - m->start_ts +
 			   m->play_sys_ts - base_sys_ts;
+
 	frame->width = f->width;
 	frame->height = f->height;
 	frame->flip = flip;
+	frame->flags |= m->is_linear_alpha ? OBS_SOURCE_FRAME_LINEAR_ALPHA : 0;
 
 	if (!m->is_local_file && !d->got_first_keyframe) {
 		if (!f->key_frame)
@@ -401,44 +433,49 @@ static void mp_media_next_video(mp_media_t *m, bool preload)
 		d->got_first_keyframe = true;
 	}
 
-	if (preload)
-		m->v_preload_cb(m->opaque, frame);
-	else
+	if (preload) {
+		if (m->seek_next_ts && m->v_seek_cb) {
+			m->v_seek_cb(m->opaque, frame);
+		} else {
+			m->v_preload_cb(m->opaque, frame);
+		}
+	} else {
 		m->v_cb(m->opaque, frame);
+	}
 }
 
 static void mp_media_calc_next_ns(mp_media_t *m)
 {
 	int64_t min_next_ns = mp_media_get_next_min_pts(m);
-
 	int64_t delta = min_next_ns - m->next_pts_ns;
+
+	if (m->seek_next_ts) {
+		delta = 0;
+		m->seek_next_ts = false;
+	} else {
 #ifdef _DEBUG
-	assert(delta >= 0);
+		assert(delta >= 0);
 #endif
-	if (delta < 0)
-		delta = 0;
-	if (delta > 3000000000)
-		delta = 0;
+		if (delta < 0)
+			delta = 0;
+		if (delta > 3000000000)
+			delta = 0;
+	}
 
 	m->next_ns += delta;
 	m->next_pts_ns = min_next_ns;
 }
 
-static bool mp_media_reset(mp_media_t *m)
+static void seek_to(mp_media_t *m, int64_t pos)
 {
 	AVStream *stream = m->fmt->streams[0];
-	int64_t seek_pos;
+	int64_t seek_pos = pos;
 	int seek_flags;
-	bool stopping;
-	bool active;
 
-	if (m->fmt->duration == AV_NOPTS_VALUE) {
-		seek_pos = 0;
+	if (m->fmt->duration == AV_NOPTS_VALUE)
 		seek_flags = AVSEEK_FLAG_FRAME;
-	} else {
-		seek_pos = m->fmt->start_time;
+	else
 		seek_flags = AVSEEK_FLAG_BACKWARD;
-	}
 
 	int64_t seek_target = seek_flags == AVSEEK_FLAG_BACKWARD
 				      ? av_rescale_q(seek_pos, AV_TIME_BASE_Q,
@@ -453,16 +490,29 @@ static bool mp_media_reset(mp_media_t *m)
 		}
 	}
 
-	if (m->has_video && m->is_local_file)
+	if (m->has_video && m->is_local_file) {
 		mp_decode_flush(&m->v);
+		if (m->seek_next_ts && m->pause && m->v_preload_cb &&
+		    mp_media_prepare_frames(m))
+			mp_media_next_video(m, true);
+	}
 	if (m->has_audio && m->is_local_file)
 		mp_decode_flush(&m->a);
+}
+
+static bool mp_media_reset(mp_media_t *m)
+{
+	bool stopping;
+	bool active;
 
 	int64_t next_ts = mp_media_get_base_pts(m);
 	int64_t offset = next_ts - m->next_pts_ns;
 
 	m->eof = false;
 	m->base_ts += next_ts;
+	m->seek_next_ts = false;
+
+	seek_to(m, m->fmt->start_time);
 
 	pthread_mutex_lock(&m->mutex);
 	stopping = m->stopping;
@@ -485,6 +535,8 @@ static bool mp_media_reset(mp_media_t *m)
 		m->next_ns = 0;
 	}
 
+	m->pause = false;
+
 	if (!active && m->is_local_file && m->v_preload_cb)
 		mp_media_next_video(m, true);
 	if (stopping && m->stop_cb)
@@ -492,21 +544,22 @@ static bool mp_media_reset(mp_media_t *m)
 	return true;
 }
 
-static inline bool mp_media_sleepto(mp_media_t *m)
+static inline bool mp_media_sleep(mp_media_t *m)
 {
 	bool timeout = false;
 
 	if (!m->next_ns) {
 		m->next_ns = os_gettime_ns();
 	} else {
-		uint64_t t = os_gettime_ns();
-		const uint64_t timeout_ns = 200000000;
-
-		if (m->next_ns > t && (m->next_ns - t) > timeout_ns) {
-			os_sleepto_ns(t + timeout_ns);
-			timeout = true;
-		} else {
-			os_sleepto_ns(m->next_ns);
+		const uint64_t t = os_gettime_ns();
+		if (m->next_ns > t) {
+			const uint32_t delta_ms =
+				(uint32_t)((m->next_ns - t + 500000) / 1000000);
+			if (delta_ms > 0) {
+				static const uint32_t timeout_ms = 200;
+				timeout = delta_ms > timeout_ms;
+				os_sleep_ms(timeout ? timeout_ms : delta_ms);
+			}
 		}
 	}
 
@@ -553,9 +606,15 @@ static int interrupt_callback(void *data)
 	return stop;
 }
 
+#define RIST_PROTO "rist"
+
 static bool init_avformat(mp_media_t *m)
 {
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(59, 0, 100)
 	AVInputFormat *format = NULL;
+#else
+	const AVInputFormat *format = NULL;
+#endif
 
 	if (m->format_name && *m->format_name) {
 		format = av_find_input_format(m->format_name);
@@ -567,19 +626,28 @@ static bool init_avformat(mp_media_t *m)
 	}
 
 	AVDictionary *opts = NULL;
-	if (m->buffering && !m->is_local_file)
+	bool is_rist = strncmp(m->path, RIST_PROTO, strlen(RIST_PROTO)) == 0;
+	if (m->buffering && !m->is_local_file && !is_rist)
 		av_dict_set_int(&opts, "buffer_size", m->buffering, 0);
 
 	m->fmt = avformat_alloc_context();
-	m->fmt->interrupt_callback.callback = interrupt_callback;
-	m->fmt->interrupt_callback.opaque = m;
+	if (m->buffering == 0) {
+		m->fmt->flags |= AVFMT_FLAG_NOBUFFER;
+	}
+	if (!m->is_local_file) {
+		av_dict_set(&opts, "stimeout", "30000000", 0);
+		m->fmt->interrupt_callback.callback = interrupt_callback;
+		m->fmt->interrupt_callback.opaque = m;
+	}
 
 	int ret = avformat_open_input(&m->fmt, m->path, format,
 				      opts ? &opts : NULL);
 	av_dict_free(&opts);
 
 	if (ret < 0) {
-		blog(LOG_WARNING, "MP: Failed to open media: '%s'", m->path);
+		if (!m->reconnecting)
+			blog(LOG_WARNING, "MP: Failed to open media: '%s'",
+			     m->path);
 		return false;
 	}
 
@@ -589,6 +657,7 @@ static bool init_avformat(mp_media_t *m)
 		return false;
 	}
 
+	m->reconnecting = false;
 	m->has_video = mp_decode_init(m, AVMEDIA_TYPE_VIDEO, m->hw);
 	m->has_audio = mp_decode_init(m, AVMEDIA_TYPE_AUDIO, m->hw);
 
@@ -603,6 +672,14 @@ static bool init_avformat(mp_media_t *m)
 	return true;
 }
 
+static void reset_ts(mp_media_t *m)
+{
+	m->base_ts += mp_media_get_base_pts(m);
+	m->play_sys_ts = (int64_t)os_gettime_ns();
+	m->start_ts = m->next_pts_ns = mp_media_get_next_min_pts(m);
+	m->next_ns = 0;
+}
+
 static inline bool mp_media_thread(mp_media_t *m)
 {
 	os_set_thread_name("mp_media_thread");
@@ -615,18 +692,22 @@ static inline bool mp_media_thread(mp_media_t *m)
 	}
 
 	for (;;) {
-		bool reset, kill, is_active;
+		bool reset, kill, is_active, seek, pause, reset_time;
+		int64_t seek_pos;
 		bool timeout = false;
 
 		pthread_mutex_lock(&m->mutex);
 		is_active = m->active;
+		pause = m->pause;
 		pthread_mutex_unlock(&m->mutex);
 
-		if (!is_active) {
+		if (!is_active || pause) {
 			if (os_sem_wait(m->sem) < 0)
 				return false;
+			if (pause)
+				reset_ts(m);
 		} else {
-			timeout = mp_media_sleepto(m);
+			timeout = mp_media_sleep(m);
 		}
 
 		pthread_mutex_lock(&m->mutex);
@@ -635,6 +716,13 @@ static inline bool mp_media_thread(mp_media_t *m)
 		kill = m->kill;
 		m->reset = false;
 		m->kill = false;
+
+		pause = m->pause;
+		seek_pos = m->seek_pos;
+		seek = m->seek;
+		reset_time = m->reset_ts;
+		m->seek = false;
+		m->reset_ts = false;
 
 		pthread_mutex_unlock(&m->mutex);
 
@@ -645,6 +733,20 @@ static inline bool mp_media_thread(mp_media_t *m)
 			mp_media_reset(m);
 			continue;
 		}
+
+		if (seek) {
+			m->seek_next_ts = true;
+			seek_to(m, seek_pos);
+			continue;
+		}
+
+		if (reset_time) {
+			reset_ts(m);
+			continue;
+		}
+
+		if (pause)
+			continue;
 
 		/* frames are ready */
 		if (is_active && !timeout) {
@@ -711,8 +813,10 @@ bool mp_media_init(mp_media_t *media, const struct mp_media_info *info)
 	media->v_cb = info->v_cb;
 	media->a_cb = info->a_cb;
 	media->stop_cb = info->stop_cb;
+	media->v_seek_cb = info->v_seek_cb;
 	media->v_preload_cb = info->v_preload_cb;
 	media->force_range = info->force_range;
+	media->is_linear_alpha = info->is_linear_alpha;
 	media->buffering = info->buffering;
 	media->speed = info->speed;
 	media->is_local_file = info->is_local_file;
@@ -722,9 +826,11 @@ bool mp_media_init(mp_media_t *media, const struct mp_media_info *info)
 
 	static bool initialized = false;
 	if (!initialized) {
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 9, 100)
 		av_register_all();
-		avdevice_register_all();
 		avcodec_register_all();
+#endif
+		avdevice_register_all();
 		avformat_network_init();
 		initialized = true;
 	}
@@ -772,7 +878,7 @@ void mp_media_free(mp_media_t *media)
 	pthread_mutex_init_value(&media->mutex);
 }
 
-void mp_media_play(mp_media_t *m, bool loop)
+void mp_media_play(mp_media_t *m, bool loop, bool reconnecting)
 {
 	pthread_mutex_lock(&m->mutex);
 
@@ -781,7 +887,20 @@ void mp_media_play(mp_media_t *m, bool loop)
 
 	m->looping = loop;
 	m->active = true;
+	m->reconnecting = reconnecting;
 
+	pthread_mutex_unlock(&m->mutex);
+
+	os_sem_post(m->sem);
+}
+
+void mp_media_play_pause(mp_media_t *m, bool pause)
+{
+	pthread_mutex_lock(&m->mutex);
+	if (m->active) {
+		m->pause = pause;
+		m->reset_ts = !pause;
+	}
 	pthread_mutex_unlock(&m->mutex);
 
 	os_sem_post(m->sem);
@@ -794,7 +913,25 @@ void mp_media_stop(mp_media_t *m)
 		m->reset = true;
 		m->active = false;
 		m->stopping = true;
-		os_sem_post(m->sem);
 	}
 	pthread_mutex_unlock(&m->mutex);
+
+	os_sem_post(m->sem);
+}
+
+int64_t mp_get_current_time(mp_media_t *m)
+{
+	return mp_media_get_base_pts(m) * (int64_t)m->speed / 100000000LL;
+}
+
+void mp_media_seek_to(mp_media_t *m, int64_t pos)
+{
+	pthread_mutex_lock(&m->mutex);
+	if (m->active) {
+		m->seek = true;
+		m->seek_pos = pos * 1000;
+	}
+	pthread_mutex_unlock(&m->mutex);
+
+	os_sem_post(m->sem);
 }

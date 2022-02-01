@@ -9,20 +9,21 @@ endif()
 
 project(updater)
 
-include_directories(${OBS_JANSSON_INCLUDE_DIRS})
 include_directories(${LIBLZMA_INCLUDE_DIRS})
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/deps/json11")
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/libobs")
 include_directories(${BLAKE2_INCLUDE_DIR})
 
-find_package(ZLIB REQUIRED)
-
 set(updater_HEADERS
+	${CMAKE_SOURCE_DIR}/deps/json11/json11.hpp
 	../win-update-helpers.hpp
 	resource.h
 	updater.hpp
 	)
 set(updater_SOURCES
+	${CMAKE_SOURCE_DIR}/deps/json11/json11.cpp
 	../win-update-helpers.cpp
+	init-hook-files.c
 	updater.cpp
 	patch.cpp
 	http.cpp
@@ -31,7 +32,7 @@ set(updater_SOURCES
 	updater.manifest
 	)
 
-add_definitions(-DNOMINMAX -DUNICODE -D_UNICODE)
+add_definitions(-DNOMINMAX -DUNICODE -D_UNICODE -DPSAPI_VERSION=2)
 if(MSVC)
 	add_compile_options($<IF:$<CONFIG:Debug>,/MTd,/MT>)
 endif()
@@ -41,12 +42,11 @@ add_executable(updater WIN32
 	${updater_SOURCES}
 	)
 target_link_libraries(updater
-	${OBS_JANSSON_IMPORT}
 	${STATIC_ZLIB_PATH}
 	lzma
 	blake2
-	psapi
 	comctl32
 	shell32
 	winhttp
 	)
+set_target_properties(updater PROPERTIES FOLDER "frontend")

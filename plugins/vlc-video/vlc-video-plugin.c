@@ -15,6 +15,7 @@ MODULE_EXPORT const char *obs_module_description(void)
 /* libvlc core */
 LIBVLC_NEW libvlc_new_;
 LIBVLC_RELEASE libvlc_release_;
+LIBVLC_GET_VERSION libvlc_get_version_;
 LIBVLC_CLOCK libvlc_clock_;
 LIBVLC_EVENT_ATTACH libvlc_event_attach_;
 
@@ -24,6 +25,7 @@ LIBVLC_MEDIA_NEW_LOCATION libvlc_media_new_location_;
 LIBVLC_MEDIA_ADD_OPTION libvlc_media_add_option_;
 LIBVLC_MEDIA_RELEASE libvlc_media_release_;
 LIBVLC_MEDIA_RELEASE libvlc_media_retain_;
+LIBVLC_MEDIA_GET_META libvlc_media_get_meta_;
 
 /* libvlc media player */
 LIBVLC_MEDIA_PLAYER_NEW libvlc_media_player_new_;
@@ -36,8 +38,12 @@ LIBVLC_AUDIO_SET_FORMAT_CALLBACKS libvlc_audio_set_format_callbacks_;
 LIBVLC_MEDIA_PLAYER_PLAY libvlc_media_player_play_;
 LIBVLC_MEDIA_PLAYER_STOP libvlc_media_player_stop_;
 LIBVLC_MEDIA_PLAYER_GET_TIME libvlc_media_player_get_time_;
+LIBVLC_MEDIA_PLAYER_SET_TIME libvlc_media_player_set_time_;
 LIBVLC_VIDEO_GET_SIZE libvlc_video_get_size_;
 LIBVLC_MEDIA_PLAYER_EVENT_MANAGER libvlc_media_player_event_manager_;
+LIBVLC_MEDIA_PLAYER_GET_STATE libvlc_media_player_get_state_;
+LIBVLC_MEDIA_PLAYER_GET_LENGTH libvlc_media_player_get_length_;
+LIBVLC_MEDIA_PLAYER_GET_MEDIA libvlc_media_player_get_media_;
 
 /* libvlc media list */
 LIBVLC_MEDIA_LIST_NEW libvlc_media_list_new_;
@@ -77,8 +83,8 @@ static bool load_vlc_funcs(void)
 		func##_ = os_dlsym(libvlc_module, #func);       \
 		if (!func##_) {                                 \
 			blog(LOG_WARNING,                       \
-			     "Could not func VLC function %s, " \
-			     "VLC loading failed",              \
+			     "[vlc-video]: Could not func VLC " \
+			     "function %s, VLC loading failed", \
 			     #func);                            \
 			return false;                           \
 		}                                               \
@@ -87,6 +93,7 @@ static bool load_vlc_funcs(void)
 	/* libvlc core */
 	LOAD_VLC_FUNC(libvlc_new);
 	LOAD_VLC_FUNC(libvlc_release);
+	LOAD_VLC_FUNC(libvlc_get_version);
 	LOAD_VLC_FUNC(libvlc_clock);
 	LOAD_VLC_FUNC(libvlc_event_attach);
 
@@ -96,6 +103,7 @@ static bool load_vlc_funcs(void)
 	LOAD_VLC_FUNC(libvlc_media_add_option);
 	LOAD_VLC_FUNC(libvlc_media_release);
 	LOAD_VLC_FUNC(libvlc_media_retain);
+	LOAD_VLC_FUNC(libvlc_media_get_meta);
 
 	/* libvlc media player */
 	LOAD_VLC_FUNC(libvlc_media_player_new);
@@ -108,8 +116,12 @@ static bool load_vlc_funcs(void)
 	LOAD_VLC_FUNC(libvlc_media_player_play);
 	LOAD_VLC_FUNC(libvlc_media_player_stop);
 	LOAD_VLC_FUNC(libvlc_media_player_get_time);
+	LOAD_VLC_FUNC(libvlc_media_player_set_time);
 	LOAD_VLC_FUNC(libvlc_video_get_size);
 	LOAD_VLC_FUNC(libvlc_media_player_event_manager);
+	LOAD_VLC_FUNC(libvlc_media_player_get_state);
+	LOAD_VLC_FUNC(libvlc_media_player_get_length);
+	LOAD_VLC_FUNC(libvlc_media_player_get_media);
 
 	/* libvlc media list */
 	LOAD_VLC_FUNC(libvlc_media_list_new);
@@ -192,7 +204,7 @@ bool load_libvlc(void)
 
 	libvlc = libvlc_new_(0, 0);
 	if (!libvlc) {
-		blog(LOG_INFO, "Couldn't create libvlc instance");
+		blog(LOG_INFO, "[vlc-video]: Couldn't create libvlc instance");
 		return false;
 	}
 
@@ -203,15 +215,16 @@ bool load_libvlc(void)
 bool obs_module_load(void)
 {
 	if (!load_libvlc_module()) {
-		blog(LOG_INFO, "Couldn't find VLC installation, VLC video "
-			       "source disabled");
+		blog(LOG_INFO, "[vlc-video]: Couldn't find VLC installation, "
+			       "VLC video source disabled");
 		return true;
 	}
 
 	if (!load_vlc_funcs())
 		return true;
 
-	blog(LOG_INFO, "VLC found, VLC video source enabled");
+	blog(LOG_INFO, "[vlc-video]: VLC %s found, VLC video source enabled",
+	     libvlc_get_version_());
 
 	obs_register_source(&vlc_source_info);
 	return true;

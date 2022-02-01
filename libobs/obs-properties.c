@@ -55,6 +55,7 @@ struct path_data {
 
 struct text_data {
 	enum obs_text_type type;
+	bool monospace;
 };
 
 struct list_data {
@@ -71,6 +72,8 @@ struct editable_list_data {
 
 struct button_data {
 	obs_property_clicked_t callback;
+	enum obs_button_type type;
+	char *url;
 };
 
 struct frame_rate_option {
@@ -330,10 +333,38 @@ void obs_properties_remove_by_name(obs_properties_t *props, const char *name)
 
 	while (cur) {
 		if (strcmp(cur->name, name) == 0) {
+			// Fix props->last pointer.
+			if (props->last == &cur->next) {
+				if (cur == prev) {
+					// If we are the last entry and there
+					// is no previous entry, reset.
+					props->last = &props->first_property;
+				} else {
+					// If we are the last entry and there
+					// is a previous entry, update.
+					props->last = &prev->next;
+				}
+			}
+
+			// Fix props->first_property.
+			if (props->first_property == cur)
+				props->first_property = cur->next;
+
+			// Update the previous element next pointer with our
+			// next pointer. This is an automatic no-op if both
+			// elements alias the same memory.
 			prev->next = cur->next;
-			cur->next = 0;
+
+			// Finally clear our own next pointer and destroy.
+			cur->next = NULL;
 			obs_property_destroy(cur);
+
 			break;
+		}
+
+		if (cur->type == OBS_PROPERTY_GROUP) {
+			obs_properties_remove_by_name(
+				obs_property_group_content(cur), name);
 		}
 
 		prev = cur;
@@ -341,22 +372,34 @@ void obs_properties_remove_by_name(obs_properties_t *props, const char *name)
 	}
 }
 
-void obs_properties_apply_settings(obs_properties_t *props,
-				   obs_data_t *settings)
+void obs_properties_apply_settings_internal(obs_properties_t *props,
+					    obs_data_t *settings,
+					    obs_properties_t *realprops)
 {
 	struct obs_property *p;
 
+	p = props->first_property;
+	while (p) {
+		if (p->type == OBS_PROPERTY_GROUP) {
+			obs_properties_apply_settings_internal(
+				obs_property_group_content(p), settings,
+				realprops);
+		}
+		if (p->modified)
+			p->modified(realprops, p, settings);
+		else if (p->modified2)
+			p->modified2(p->priv, realprops, p, settings);
+		p = p->next;
+	}
+}
+
+void obs_properties_apply_settings(obs_properties_t *props,
+				   obs_data_t *settings)
+{
 	if (!props)
 		return;
 
-	p = props->first_property;
-	while (p) {
-		if (p->modified)
-			p->modified(props, p, settings);
-		else if (p->modified2)
-			p->modified2(p->priv, props, p, settings);
-		p = p->next;
-	}
+	obs_properties_apply_settings_internal(props, settings, props);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -397,6 +440,8 @@ static inline size_t get_property_size(enum obs_property_type type)
 		return sizeof(struct frame_rate_data);
 	case OBS_PROPERTY_GROUP:
 		return sizeof(struct group_data);
+	case OBS_PROPERTY_COLOR_ALPHA:
+		return 0;
 	}
 
 	return 0;
@@ -611,6 +656,15 @@ obs_property_t *obs_properties_add_color(obs_properties_t *props,
 	return new_prop(props, name, desc, OBS_PROPERTY_COLOR);
 }
 
+obs_property_t *obs_properties_add_color_alpha(obs_properties_t *props,
+					       const char *name,
+					       const char *desc)
+{
+	if (!props || has_prop(props, name))
+		return NULL;
+	return new_prop(props, name, desc, OBS_PROPERTY_COLOR_ALPHA);
+}
+
 obs_property_t *obs_properties_add_button(obs_properties_t *props,
 					  const char *name, const char *text,
 					  obs_property_clicked_t callback)
@@ -700,7 +754,8 @@ static bool check_property_group_recursion(obs_properties_t *parent,
 				 * lets verify anyway. */
 				return true;
 			}
-			check_property_group_recursion(cprops, group);
+			if (check_property_group_recursion(parent, cprops))
+				return true;
 		}
 
 		current_property = current_property->next;
@@ -961,6 +1016,12 @@ enum obs_text_type obs_property_text_type(obs_property_t *p)
 	return data ? data->type : OBS_TEXT_DEFAULT;
 }
 
+bool obs_property_text_monospace(obs_property_t *p)
+{
+	struct text_data *data = get_type_data(p, OBS_PROPERTY_TEXT);
+	return data ? data->monospace : false;
+}
+
 enum obs_path_type obs_property_path_type(obs_property_t *p)
 {
 	struct path_data *data = get_type_data(p, OBS_PROPERTY_PATH);
@@ -1032,6 +1093,33 @@ void obs_property_float_set_suffix(obs_property_t *p, const char *suffix)
 
 	bfree(data->suffix);
 	data->suffix = bstrdup(suffix);
+}
+
+void obs_property_text_set_monospace(obs_property_t *p, bool monospace)
+{
+	struct text_data *data = get_type_data(p, OBS_PROPERTY_TEXT);
+	if (!data)
+		return;
+
+	data->monospace = monospace;
+}
+
+void obs_property_button_set_type(obs_property_t *p, enum obs_button_type type)
+{
+	struct button_data *data = get_type_data(p, OBS_PROPERTY_BUTTON);
+	if (!data)
+		return;
+
+	data->type = type;
+}
+
+void obs_property_button_set_url(obs_property_t *p, char *url)
+{
+	struct button_data *data = get_type_data(p, OBS_PROPERTY_BUTTON);
+	if (!data)
+		return;
+
+	data->url = url;
 }
 
 void obs_property_list_clear(obs_property_t *p)
@@ -1366,4 +1454,16 @@ obs_properties_t *obs_property_group_content(obs_property_t *p)
 {
 	struct group_data *data = get_type_data(p, OBS_PROPERTY_GROUP);
 	return data ? data->content : NULL;
+}
+
+enum obs_button_type obs_property_button_type(obs_property_t *p)
+{
+	struct button_data *data = get_type_data(p, OBS_PROPERTY_BUTTON);
+	return data ? data->type : OBS_BUTTON_DEFAULT;
+}
+
+const char *obs_property_button_url(obs_property_t *p)
+{
+	struct button_data *data = get_type_data(p, OBS_PROPERTY_BUTTON);
+	return data ? data->url : "";
 }

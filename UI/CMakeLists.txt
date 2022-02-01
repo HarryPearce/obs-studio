@@ -29,16 +29,6 @@ else()
 	set(TWITCH_ENABLED TRUE)
 endif()
 
-if(NOT DEFINED MIXER_CLIENTID OR "${MIXER_CLIENTID}" STREQUAL "" OR
-   NOT DEFINED MIXER_HASH     OR "${MIXER_HASH}"     STREQUAL "" OR
-   NOT BROWSER_AVAILABLE_INTERNAL)
-	set(MIXER_ENABLED FALSE)
-	set(MIXER_CLIENTID "")
-	set(MIXER_HASH "0")
-else()
-	set(MIXER_ENABLED TRUE)
-endif()
-
 if(NOT DEFINED RESTREAM_CLIENTID OR "${RESTREAM_CLIENTID}" STREQUAL "" OR
    NOT DEFINED RESTREAM_HASH     OR "${RESTREAM_HASH}"     STREQUAL "" OR
    NOT BROWSER_AVAILABLE_INTERNAL)
@@ -49,6 +39,28 @@ else()
 	set(RESTREAM_ENABLED TRUE)
 endif()
 
+if(DEFINED ENV{YOUTUBE_CLIENTID} AND NOT DEFINED YOUTUBE_CLIENTID)
+	set(YOUTUBE_CLIENTID "$ENV{YOUTUBE_CLIENTID}")
+endif()
+if(DEFINED ENV{YOUTUBE_CLIENTID_HASH} AND NOT DEFINED YOUTUBE_CLIENTID_HASH)
+	set(YOUTUBE_CLIENTID_HASH "$ENV{YOUTUBE_CLIENTID_HASH}")
+endif()
+if(DEFINED ENV{YOUTUBE_SECRET} AND NOT DEFINED YOUTUBE_SECRET)
+	set(YOUTUBE_SECRET "$ENV{YOUTUBE_SECRET}")
+endif()
+if(DEFINED ENV{YOUTUBE_SECRET_HASH} AND NOT DEFINED YOUTUBE_SECRET_HASH)
+	set(YOUTUBE_SECRET_HASH "$ENV{YOUTUBE_SECRET_HASH}")
+endif()
+
+if(NOT DEFINED YOUTUBE_CLIENTID OR "${YOUTUBE_CLIENTID}" STREQUAL "" OR
+   NOT DEFINED YOUTUBE_SECRET OR "${YOUTUBE_SECRET}" STREQUAL "" OR
+   NOT DEFINED YOUTUBE_CLIENTID_HASH OR "${YOUTUBE_CLIENTID_HASH}" STREQUAL "" OR
+   NOT DEFINED YOUTUBE_SECRET_HASH OR "${YOUTUBE_SECRET_HASH}" STREQUAL "")
+	set(YOUTUBE_ENABLED FALSE)
+else()
+	set(YOUTUBE_ENABLED TRUE)
+endif()
+
 configure_file(
 	"${CMAKE_CURRENT_SOURCE_DIR}/ui-config.h.in"
 	"${CMAKE_CURRENT_BINARY_DIR}/ui-config.h")
@@ -56,13 +68,17 @@ configure_file(
 set(CMAKE_INCLUDE_CURRENT_DIR TRUE)
 set(CMAKE_AUTOMOC TRUE)
 
+find_package(Threads REQUIRED)
+
+find_package(Qt5Network ${FIND_MODE})
+find_package(Qt5Widgets ${FIND_MODE})
 find_package(Qt5Svg ${FIND_MODE})
+if(WIN32 AND (Qt5Widgets_VERSION VERSION_LESS 6.0.0))
+	find_package(Qt5WinExtras ${FIND_MODE})
+endif()
+find_package(Qt5Xml ${FIND_MODE})
 
 find_package(FFmpeg REQUIRED COMPONENTS avcodec avutil avformat)
-
-if(APPLE)
-	find_package(Qt5MacExtras REQUIRED)
-endif(APPLE)
 
 if(NOT Qt5Widgets_FOUND)
 	if (ENABLE_UI)
@@ -89,7 +105,6 @@ include_directories(${LIBCURL_INCLUDE_DIRS})
 add_definitions(${LIBCURL_DEFINITIONS})
 
 if(WIN32)
-	include_directories(${OBS_JANSSON_INCLUDE_DIRS})
 	include_directories(${BLAKE2_INCLUDE_DIR})
 
 	set(obs_PLATFORM_SOURCES
@@ -104,8 +119,7 @@ if(WIN32)
 		win-update/win-update-helpers.hpp)
 	set(obs_PLATFORM_LIBRARIES
 		crypt32
-		blake2
-		${OBS_JANSSON_IMPORT})
+		blake2)
 
 	if(CMAKE_SIZEOF_VOID_P EQUAL 4)
 		set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /LARGEADDRESSAWARE")
@@ -133,23 +147,34 @@ elseif(APPLE)
 	endif()
 
 elseif(UNIX)
-        find_package(Qt5X11Extras REQUIRED)
+	find_package(Qt5Gui REQUIRED)
+	find_package(PythonDeps QUIET)
+
+	include_directories(${Qt5Gui_PRIVATE_INCLUDE_DIRS})
 
 	set(obs_PLATFORM_SOURCES
 		platform-x11.cpp)
 
-        set(obs_PLATFORM_LIBRARIES
-                Qt5::X11Extras)
+	set(obs_PLATFORM_LIBRARIES
+		${obs_PLATFORM_LIBRARIES}
+		Qt5::Gui
+		Qt5::GuiPrivate)
+
+
+	if("${CMAKE_SYSTEM_NAME}" MATCHES "FreeBSD")
+		list(APPEND obs_PLATFORM_LIBRARIES
+			procstat)
+	endif()
 endif()
 
 if(BROWSER_AVAILABLE_INTERNAL)
 	list(APPEND obs_PLATFORM_SOURCES
-		obf.c
-		auth-oauth.cpp
+		window-dock-browser.cpp
+		window-extra-browsers.cpp
 		)
 	list(APPEND obs_PLATFORM_HEADERS
-		obf.h
-		auth-oauth.hpp
+		window-dock-browser.hpp
+		window-extra-browsers.hpp
 		)
 
 	if(TWITCH_ENABLED)
@@ -161,15 +186,6 @@ if(BROWSER_AVAILABLE_INTERNAL)
 			)
 	endif()
 
-	if(MIXER_ENABLED)
-		list(APPEND obs_PLATFORM_SOURCES
-			auth-mixer.cpp
-			)
-		list(APPEND obs_PLATFORM_HEADERS
-			auth-mixer.hpp
-			)
-	endif()
-
 	if(RESTREAM_ENABLED)
 		list(APPEND obs_PLATFORM_SOURCES
 			auth-restream.cpp
@@ -178,6 +194,18 @@ if(BROWSER_AVAILABLE_INTERNAL)
 			auth-restream.hpp
 			)
 	endif()
+
+endif()
+
+if(YOUTUBE_ENABLED)
+	list(APPEND obs_PLATFORM_SOURCES
+		auth-youtube.cpp
+		youtube-api-wrappers.cpp
+		)
+	list(APPEND obs_PLATFORM_HEADERS
+		auth-youtube.hpp
+		youtube-api-wrappers.hpp
+		)
 endif()
 
 set(obs_libffutil_SOURCES
@@ -192,6 +220,9 @@ if(MSVC)
 		../deps/libff/libff/ff-util.c
 		PROPERTIES COMPILE_FLAGS -Dinline=__inline
 		)
+	set(obs_PLATFORM_LIBRARIES
+		${obs_PLATFORM_LIBRARIES}
+		w32-pthreads)
 endif()
 
 set(obs_SOURCES
@@ -211,23 +242,32 @@ set(obs_SOURCES
 	window-basic-main-outputs.cpp
 	window-basic-source-select.cpp
 	window-basic-settings-stream.cpp
+	window-basic-main-screenshot.cpp
 	window-basic-auto-config-test.cpp
 	window-basic-main-scene-collections.cpp
 	window-basic-main-transitions.cpp
 	window-basic-main-dropfiles.cpp
 	window-basic-main-profiles.cpp
 	window-basic-main-browser.cpp
+	window-basic-main-icons.cpp
 	window-basic-status-bar.cpp
 	window-basic-adv-audio.cpp
 	window-basic-transform.cpp
 	window-basic-preview.cpp
 	window-basic-about.cpp
+	window-importer.cpp
+	media-controls.cpp
 	window-namedialog.cpp
 	window-log-reply.cpp
 	window-projector.cpp
 	window-remux.cpp
+	window-missing-files.cpp
 	auth-base.cpp
+	auth-oauth.cpp
+	auth-listener.cpp
+	obf.c
 	source-tree.cpp
+	scene-tree.cpp
 	properties-view.cpp
 	focus-list.cpp
 	menu-button.cpp
@@ -235,9 +275,13 @@ set(obs_SOURCES
 	slider-ignorewheel.cpp
 	combobox-ignorewheel.cpp
 	spinbox-ignorewheel.cpp
+	record-button.cpp
+	ui-validation.cpp
+	url-push-button.cpp
 	volume-control.cpp
 	adv-audio-control.cpp
 	item-widget-helpers.cpp
+	context-bar-controls.cpp
 	horizontal-scroll-area.cpp
 	vertical-scroll-area.cpp
 	visibility-item-widget.cpp
@@ -248,7 +292,13 @@ set(obs_SOURCES
 	source-label.cpp
 	remote-text.cpp
 	audio-encoders.cpp
-	qt-wrappers.cpp)
+	qt-wrappers.cpp
+	log-viewer.cpp
+	obs-proxy-style.cpp
+	locked-checkbox.cpp
+	visibility-checkbox.cpp
+	media-slider.cpp
+	undo-stack-obs.cpp)
 
 set(obs_HEADERS
 	${obs_PLATFORM_HEADERS}
@@ -272,12 +322,19 @@ set(obs_HEADERS
 	window-basic-adv-audio.hpp
 	window-basic-transform.hpp
 	window-basic-preview.hpp
+	window-importer.hpp
+	media-controls.hpp
 	window-namedialog.hpp
 	window-log-reply.hpp
 	window-projector.hpp
 	window-remux.hpp
+	window-missing-files.hpp
 	auth-base.hpp
+	auth-oauth.hpp
+	auth-listener.hpp
+	obf.h
 	source-tree.hpp
+	scene-tree.hpp
 	properties-view.hpp
 	properties-view.moc.hpp
 	display-helpers.hpp
@@ -289,10 +346,15 @@ set(obs_HEADERS
 	focus-list.hpp
 	menu-button.hpp
 	mute-checkbox.hpp
+	record-button.hpp
+	ui-validation.hpp
+	screenshot-obj.hpp
+	url-push-button.hpp
 	volume-control.hpp
 	adv-audio-control.hpp
 	item-widget-helpers.hpp
 	visibility-checkbox.hpp
+	context-bar-controls.hpp
 	locked-checkbox.hpp
 	horizontal-scroll-area.hpp
 	expand-checkbox.hpp
@@ -306,10 +368,34 @@ set(obs_HEADERS
 	remote-text.hpp
 	audio-encoders.hpp
 	qt-wrappers.hpp
-	clickable-label.hpp)
+	clickable-label.hpp
+	log-viewer.hpp
+	obs-proxy-style.hpp
+	obs-proxy-style.hpp
+	media-slider.hpp
+	undo-stack-obs.hpp)
+
+set(obs_importers_HEADERS
+	importers/importers.hpp)
+
+set(obs_importers_SOURCES
+	importers/importers.cpp
+	importers/classic.cpp
+	importers/sl.cpp
+	importers/studio.cpp
+	importers/xsplit.cpp)
+
+source_group("importers\\Source Files" FILES ${obs_importers_SOURCES})
+source_group("importers\\Header Files" FILES ${obs_importers_HEADERS})
 
 set(obs_UI
-	forms/NameDialog.ui
+	forms/source-toolbar/browser-source-toolbar.ui
+	forms/source-toolbar/device-select-toolbar.ui
+	forms/source-toolbar/game-capture-toolbar.ui
+	forms/source-toolbar/image-source-toolbar.ui
+	forms/source-toolbar/color-source-toolbar.ui
+	forms/source-toolbar/text-source-toolbar.ui
+	forms/source-toolbar/media-controls.ui
 	forms/AutoConfigStartPage.ui
 	forms/AutoConfigVideoPage.ui
 	forms/AutoConfigStreamPage.ui
@@ -322,19 +408,37 @@ set(obs_UI
 	forms/OBSBasicSettings.ui
 	forms/OBSBasicSourceSelect.ui
 	forms/OBSBasicInteraction.ui
+	forms/OBSExtraBrowsers.ui
 	forms/OBSUpdate.ui
 	forms/OBSRemux.ui
+	forms/OBSImporter.ui
+	forms/OBSMissingFiles.ui
 	forms/OBSAbout.ui)
 
 set(obs_QRC
 	forms/obs.qrc)
 
+if(YOUTUBE_ENABLED)
+	list(APPEND obs_SOURCES
+		window-youtube-actions.cpp
+		)
+	list(APPEND obs_HEADERS
+		window-youtube-actions.hpp
+		)
+	list(APPEND obs_UI
+		forms/OBSYoutubeActions.ui
+		)
+endif()
+
 qt5_wrap_ui(obs_UI_HEADERS ${obs_UI})
 qt5_add_resources(obs_QRC_SOURCES ${obs_QRC})
 
 add_executable(obs WIN32
+	obs.manifest
 	${obs_SOURCES}
 	${obs_HEADERS}
+	${obs_importers_SOURCES}
+	${obs_importers_HEADERS}
 	${obs_UI_HEADERS}
 	${obs_QRC_SOURCES})
 
@@ -348,30 +452,26 @@ if(WIN32)
 	set_target_properties(obs
 		PROPERTIES
 			OUTPUT_NAME "obs${_output_suffix}")
+
+	if(Qt5Widgets_VERSION VERSION_LESS 6.0.0)
+		target_link_libraries(obs
+				Qt5::WinExtras)		
+	endif()	
 endif()
 
 target_link_libraries(obs
 	libobs
+	Threads::Threads
+	Qt5::Network
 	Qt5::Widgets
 	Qt5::Svg
+	Qt5::Xml
 	obs-frontend-api
 	${FFMPEG_LIBRARIES}
 	${LIBCURL_LIBRARIES}
 	${obs_PLATFORM_LIBRARIES})
 
-if (APPLE)
-	target_link_libraries(obs
-			Qt5::MacExtras)
-	set_target_properties(obs PROPERTIES LINK_FLAGS "-pagezero_size 10000 -image_base 100000000")
-	set_property(
-		TARGET obs
-		APPEND
-		PROPERTY INSTALL_RPATH
-		"/usr/local/Cellar/python3/3.6.4_2/Frameworks/Python.framework/Versions/3.6/lib/"
-		"/Library/Frameworks/Python.framework/Versions/3.6/lib/"
-		"/opt/local/Library/Frameworks/Python.framework/Versions/3.6/lib/"
-	)
-endif()
+set_target_properties(obs PROPERTIES FOLDER "frontend")
 
 define_graphic_modules(obs)
 
@@ -381,6 +481,19 @@ install_obs_data_file(obs ../AUTHORS obs-studio/authors)
 
 if (UNIX AND UNIX_STRUCTURE AND NOT APPLE)
 	add_subdirectory(xdg-data)
+endif()
+
+if (UNIX AND NOT APPLE)
+	# python symbols must be in the global symbol table
+	# so we link the main executable to python if we expect
+	# obs-scripting python support to be enabled.
+	# see: https://github.com/obsproject/obs-studio/issues/2222 and https://bugs.python.org/issue36721
+	if(NOT DISABLE_PYTHON AND PYTHONLIBS_FOUND)
+		target_link_libraries(obs ${PYTHON_LIBRARIES})
+		set_target_properties(obs PROPERTIES LINK_FLAGS "-Wl,--no-as-needed")
+		# Use this after cmake 3.13 aka we drop ubuntu 18.04.
+		# target_link_options(obs PRIVATE "LINKER:-no-as-needed")
+	endif()
 endif()
 
 add_subdirectory(frontend-plugins)

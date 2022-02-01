@@ -84,6 +84,7 @@ EXPORT int os_dtostr(double value, char *dst, size_t size);
 EXPORT void *os_dlopen(const char *path);
 EXPORT void *os_dlsym(void *module, const char *func);
 EXPORT void os_dlclose(void *module);
+EXPORT bool os_is_obs_plugin(const char *path);
 
 struct os_cpu_usage_info;
 typedef struct os_cpu_usage_info os_cpu_usage_info_t;
@@ -195,13 +196,6 @@ typedef struct os_proc_memory_usage os_proc_memory_usage_t;
 EXPORT bool os_get_proc_memory_usage(os_proc_memory_usage_t *usage);
 EXPORT uint64_t os_get_proc_resident_size(void);
 EXPORT uint64_t os_get_proc_virtual_size(void);
-
-#ifdef _MSC_VER
-#define strtoll _strtoi64
-#if _MSC_VER < 1900
-#define snprintf _snprintf
-#endif
-#endif
 
 /* clang-format off */
 #ifdef __APPLE__
