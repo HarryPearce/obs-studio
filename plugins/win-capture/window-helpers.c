@@ -1,9 +1,9 @@
-#define PSAPI_VERSION 1
 #include <obs.h>
 #include <util/dstr.h>
 
-#include <windows.h>
+#include <dwmapi.h>
 #include <psapi.h>
+#include <windows.h>
 #include "window-helpers.h"
 #include "obfuscate.h"
 
@@ -57,9 +57,10 @@ static HMODULE kernel32(void)
 static inline HANDLE open_process(DWORD desired_access, bool inherit_handle,
 				  DWORD process_id)
 {
-	static HANDLE(WINAPI * open_process_proc)(DWORD, BOOL, DWORD) = NULL;
+	typedef HANDLE(WINAPI * PFN_OpenProcess)(DWORD, BOOL, DWORD);
+	static PFN_OpenProcess open_process_proc = NULL;
 	if (!open_process_proc)
-		open_process_proc = get_obfuscated_func(
+		open_process_proc = (PFN_OpenProcess)get_obfuscated_func(
 			kernel32(), "B}caZyah`~q", 0x2D5BEBAF6DDULL);
 
 	return open_process_proc(desired_access, inherit_handle, process_id);
@@ -104,17 +105,29 @@ fail:
 
 void get_window_title(struct dstr *name, HWND hwnd)
 {
-	wchar_t *temp;
 	int len;
 
 	len = GetWindowTextLengthW(hwnd);
 	if (!len)
 		return;
 
-	temp = malloc(sizeof(wchar_t) * (len + 1));
-	if (GetWindowTextW(hwnd, temp, len + 1))
-		dstr_from_wcs(name, temp);
-	free(temp);
+	if (len > 1024) {
+		wchar_t *temp;
+
+		temp = malloc(sizeof(wchar_t) * (len + 1));
+		if (!temp)
+			return;
+
+		if (GetWindowTextW(hwnd, temp, len + 1))
+			dstr_from_wcs(name, temp);
+
+		free(temp);
+	} else {
+		wchar_t temp[1024 + 1];
+
+		if (GetWindowTextW(hwnd, temp, len + 1))
+			dstr_from_wcs(name, temp);
+	}
 }
 
 void get_window_class(struct dstr *class, HWND hwnd)
@@ -126,14 +139,29 @@ void get_window_class(struct dstr *class, HWND hwnd)
 		dstr_from_wcs(class, temp);
 }
 
-/* not capturable or internal windows */
-static const char *internal_microsoft_exes[] = {
-	"applicationframehost",
-	"shellexperiencehost",
+/* not capturable or internal windows, exact executable names */
+static const char *internal_microsoft_exes_exact[] = {
+	"startmenuexperiencehost.exe",
+	"applicationframehost.exe",
+	"peopleexperiencehost.exe",
+	"shellexperiencehost.exe",
+	"microsoft.notes.exe",
+	"systemsettings.exe",
+	"textinputhost.exe",
+	"searchapp.exe",
+	"video.ui.exe",
+	"searchui.exe",
+	"lockapp.exe",
+	"cortana.exe",
+	"gamebar.exe",
+	"tabtip.exe",
+	"time.exe",
+	NULL,
+};
+
+/* partial matches start from the beginning of the executable name */
+static const char *internal_microsoft_exes_partial[] = {
 	"windowsinternal",
-	"winstore.app",
-	"searchui",
-	"lockapp",
 	NULL,
 };
 
@@ -142,7 +170,13 @@ static bool is_microsoft_internal_window_exe(const char *exe)
 	if (!exe)
 		return false;
 
-	for (const char **vals = internal_microsoft_exes; *vals; vals++) {
+	for (const char **vals = internal_microsoft_exes_exact; *vals; vals++) {
+		if (astrcmpi(exe, *vals) == 0)
+			return true;
+	}
+
+	for (const char **vals = internal_microsoft_exes_partial; *vals;
+	     vals++) {
 		if (astrcmpi_n(exe, *vals, strlen(*vals)) == 0)
 			return true;
 	}
@@ -202,13 +236,22 @@ static void add_window(obs_property_t *p, HWND hwnd, add_window_cb callback)
 	dstr_free(&exe);
 }
 
+static inline bool IsWindowCloaked(HWND window)
+{
+	DWORD cloaked;
+	HRESULT hr = DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked,
+					   sizeof(cloaked));
+	return SUCCEEDED(hr) && cloaked;
+}
+
 static bool check_window_valid(HWND window, enum window_search_mode mode)
 {
 	DWORD styles, ex_styles;
 	RECT rect;
 
 	if (!IsWindowVisible(window) ||
-	    (mode == EXCLUDE_MINIMIZED && IsIconic(window)))
+	    (mode == EXCLUDE_MINIMIZED &&
+	     (IsIconic(window) || IsWindowCloaked(window))))
 		return false;
 
 	GetClientRect(window, &rect);
@@ -341,7 +384,7 @@ void fill_window_list(obs_property_t *p, enum window_search_mode mode,
 
 static int window_rating(HWND window, enum window_priority priority,
 			 const char *class, const char *title, const char *exe,
-			 bool uwp_window)
+			 bool generic_class)
 {
 	struct dstr cur_class = {0};
 	struct dstr cur_title = {0};
@@ -357,8 +400,8 @@ static int window_rating(HWND window, enum window_priority priority,
 	bool exe_matches = dstr_cmpi(&cur_exe, exe) == 0;
 	int title_val = abs(dstr_cmpi(&cur_title, title));
 
-	/* always match by name with UWP windows */
-	if (uwp_window) {
+	/* always match by name if class is generic */
+	if (generic_class) {
 		if (priority == WINDOW_PRIORITY_EXE && !exe_matches)
 			val = 0x7FFFFFFF;
 		else
@@ -383,6 +426,37 @@ static int window_rating(HWND window, enum window_priority priority,
 	return val;
 }
 
+static const char *generic_class_substrings[] = {
+	"Chrome",
+	NULL,
+};
+
+static const char *generic_classes[] = {
+	"Windows.UI.Core.CoreWindow",
+	NULL,
+};
+
+static bool is_generic_class(const char *current_class)
+{
+	const char **class = generic_class_substrings;
+	while (*class) {
+		if (astrstri(current_class, *class) != NULL) {
+			return true;
+		}
+		class ++;
+	}
+
+	class = generic_classes;
+	while (*class) {
+		if (astrcmpi(current_class, *class) == 0) {
+			return true;
+		}
+		class ++;
+	}
+
+	return false;
+}
+
 HWND find_window(enum window_search_mode mode, enum window_priority priority,
 		 const char *class, const char *title, const char *exe)
 {
@@ -396,11 +470,11 @@ HWND find_window(enum window_search_mode mode, enum window_priority priority,
 	if (!class)
 		return NULL;
 
-	bool uwp_window = strcmp(class, "Windows.UI.Core.CoreWindow") == 0;
+	bool generic_class = is_generic_class(class);
 
 	while (window) {
 		int rating = window_rating(window, priority, class, title, exe,
-					   uwp_window);
+					   generic_class);
 		if (rating < best_rating) {
 			best_rating = rating;
 			best_window = window;
@@ -412,4 +486,56 @@ HWND find_window(enum window_search_mode mode, enum window_priority priority,
 	}
 
 	return best_window;
+}
+
+struct top_level_enum_data {
+	enum window_search_mode mode;
+	enum window_priority priority;
+	const char *class;
+	const char *title;
+	const char *exe;
+	bool generic_class;
+	HWND best_window;
+	int best_rating;
+};
+
+BOOL CALLBACK enum_windows_proc(HWND window, LPARAM lParam)
+{
+	struct top_level_enum_data *data = (struct top_level_enum_data *)lParam;
+
+	if (!check_window_valid(window, data->mode))
+		return TRUE;
+
+	if (IsWindowCloaked(window))
+		return TRUE;
+
+	const int rating = window_rating(window, data->priority, data->class,
+					 data->title, data->exe,
+					 data->generic_class);
+	if (rating < data->best_rating) {
+		data->best_rating = rating;
+		data->best_window = window;
+	}
+
+	return rating > 0;
+}
+
+HWND find_window_top_level(enum window_search_mode mode,
+			   enum window_priority priority, const char *class,
+			   const char *title, const char *exe)
+{
+	if (!class)
+		return NULL;
+
+	struct top_level_enum_data data;
+	data.mode = mode;
+	data.priority = priority;
+	data.class = class;
+	data.title = title;
+	data.exe = exe;
+	data.generic_class = is_generic_class(class);
+	data.best_window = NULL;
+	data.best_rating = 0x7FFFFFFF;
+	EnumWindows(enum_windows_proc, (LPARAM)&data);
+	return data.best_window;
 }

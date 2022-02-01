@@ -17,6 +17,48 @@
 
 #pragma once
 
+static const char *gl_error_to_str(GLenum errorcode)
+{
+	static const struct {
+		GLenum error;
+		const char *str;
+	} err_to_str[] = {
+		{
+			GL_INVALID_ENUM,
+			"GL_INVALID_ENUM",
+		},
+		{
+			GL_INVALID_VALUE,
+			"GL_INVALID_VALUE",
+		},
+		{
+			GL_INVALID_OPERATION,
+			"GL_INVALID_OPERATION",
+		},
+		{
+			GL_INVALID_FRAMEBUFFER_OPERATION,
+			"GL_INVALID_FRAMEBUFFER_OPERATION",
+		},
+		{
+			GL_OUT_OF_MEMORY,
+			"GL_OUT_OF_MEMORY",
+		},
+		{
+			GL_STACK_UNDERFLOW,
+			"GL_STACK_UNDERFLOW",
+		},
+		{
+			GL_STACK_OVERFLOW,
+			"GL_STACK_OVERFLOW",
+		},
+	};
+	for (size_t i = 0; i < sizeof(err_to_str) / sizeof(*err_to_str); i++) {
+		if (err_to_str[i].error == errorcode)
+			return err_to_str[i].str;
+	}
+	return "Unknown";
+}
+
 /*
  * Okay, so GL error handling is..  unclean to work with.  I don't want
  * to have to keep typing out the same stuff over and over again do I'll just
@@ -27,10 +69,19 @@ static inline bool gl_success(const char *funcname)
 {
 	GLenum errorcode = glGetError();
 	if (errorcode != GL_NO_ERROR) {
+		int attempts = 8;
 		do {
-			blog(LOG_ERROR, "%s failed, glGetError returned 0x%X",
-			     funcname, errorcode);
+			blog(LOG_ERROR,
+			     "%s failed, glGetError returned %s(0x%X)",
+			     funcname, gl_error_to_str(errorcode), errorcode);
 			errorcode = glGetError();
+
+			--attempts;
+			if (attempts == 0) {
+				blog(LOG_ERROR,
+				     "Too many GL errors, moving on");
+				break;
+			}
 		} while (errorcode != GL_NO_ERROR);
 		return false;
 	}
@@ -98,15 +149,33 @@ static inline bool gl_bind_renderbuffer(GLenum target, GLuint buffer)
 	return gl_success("glBindRendebuffer");
 }
 
+static inline bool gl_gen_framebuffers(GLsizei num_arrays, GLuint *arrays)
+{
+	glGenFramebuffers(num_arrays, arrays);
+	return gl_success("glGenFramebuffers");
+}
+
 static inline bool gl_bind_framebuffer(GLenum target, GLuint buffer)
 {
 	glBindFramebuffer(target, buffer);
 	return gl_success("glBindFramebuffer");
 }
 
+static inline void gl_delete_framebuffers(GLsizei num_arrays, GLuint *arrays)
+{
+	glDeleteFramebuffers(num_arrays, arrays);
+	gl_success("glDeleteFramebuffers");
+}
+
 static inline bool gl_tex_param_f(GLenum target, GLenum param, GLfloat val)
 {
 	glTexParameterf(target, param, val);
+	return gl_success("glTexParameterf");
+}
+
+static inline bool gl_tex_param_fv(GLenum target, GLenum param, GLfloat *val)
+{
+	glTexParameterfv(target, param, val);
 	return gl_success("glTexParameterf");
 }
 

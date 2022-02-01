@@ -27,7 +27,7 @@ void gs_texture_2d::InitSRD(vector<D3D11_SUBRESOURCE_DATA> &srd)
 	size_t curTex = 0;
 
 	if (!actual_levels)
-		actual_levels = gs_get_total_levels(width, height);
+		actual_levels = gs_get_total_levels(width, height, 1);
 
 	rowSizeBytes /= 8;
 
@@ -48,26 +48,33 @@ void gs_texture_2d::InitSRD(vector<D3D11_SUBRESOURCE_DATA> &srd)
 	}
 }
 
-void gs_texture_2d::BackupTexture(const uint8_t **data)
+void gs_texture_2d::BackupTexture(const uint8_t *const *data)
 {
-	this->data.resize(levels);
-
-	uint32_t w = width;
-	uint32_t h = height;
+	uint32_t textures = type == GS_TEXTURE_CUBE ? 6 : 1;
 	uint32_t bbp = gs_get_format_bpp(format);
 
-	for (uint32_t i = 0; i < levels; i++) {
-		if (!data[i])
-			break;
+	this->data.resize(levels * textures);
 
-		uint32_t texSize = bbp * w * h / 8;
-		this->data[i].resize(texSize);
+	for (uint32_t t = 0; t < textures; t++) {
+		uint32_t w = width;
+		uint32_t h = height;
 
-		vector<uint8_t> &subData = this->data[i];
-		memcpy(&subData[0], data[i], texSize);
+		for (uint32_t lv = 0; lv < levels; lv++) {
+			uint32_t i = levels * t + lv;
+			if (!data[i])
+				break;
 
-		w /= 2;
-		h /= 2;
+			uint32_t texSize = bbp * w * h / 8;
+
+			vector<uint8_t> &subData = this->data[i];
+			subData.resize(texSize);
+			memcpy(&subData[0], data[i], texSize);
+
+			if (w > 1)
+				w /= 2;
+			if (h > 1)
+				h /= 2;
+		}
 	}
 }
 
@@ -87,7 +94,7 @@ void gs_texture_2d::GetSharedHandle(IDXGIResource *dxgi_res)
 	}
 }
 
-void gs_texture_2d::InitTexture(const uint8_t **data)
+void gs_texture_2d::InitTexture(const uint8_t *const *data)
 {
 	HRESULT hr;
 
@@ -96,7 +103,7 @@ void gs_texture_2d::InitTexture(const uint8_t **data)
 	td.Height = height;
 	td.MipLevels = genMipmaps ? 0 : levels;
 	td.ArraySize = type == GS_TEXTURE_CUBE ? 6 : 1;
-	td.Format = nv12 ? DXGI_FORMAT_NV12 : dxgiFormat;
+	td.Format = nv12 ? DXGI_FORMAT_NV12 : dxgiFormatResource;
 	td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 	td.SampleDesc.Count = 1;
 	td.CPUAccessFlags = isDynamic ? D3D11_CPU_ACCESS_WRITE : 0;
@@ -170,23 +177,35 @@ void gs_texture_2d::InitResourceView()
 {
 	HRESULT hr;
 
-	memset(&resourceDesc, 0, sizeof(resourceDesc));
-	resourceDesc.Format = dxgiFormat;
+	memset(&viewDesc, 0, sizeof(viewDesc));
+	viewDesc.Format = dxgiFormatView;
 
 	if (type == GS_TEXTURE_CUBE) {
-		resourceDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-		resourceDesc.TextureCube.MipLevels =
-			genMipmaps || !levels ? -1 : levels;
+		viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+		viewDesc.TextureCube.MipLevels = genMipmaps || !levels ? -1
+								       : levels;
 	} else {
-		resourceDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-		resourceDesc.Texture2D.MipLevels =
-			genMipmaps || !levels ? -1 : levels;
+		viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		viewDesc.Texture2D.MipLevels = genMipmaps || !levels ? -1
+								     : levels;
 	}
 
-	hr = device->device->CreateShaderResourceView(texture, &resourceDesc,
+	hr = device->device->CreateShaderResourceView(texture, &viewDesc,
 						      shaderRes.Assign());
 	if (FAILED(hr))
-		throw HRError("Failed to create resource view", hr);
+		throw HRError("Failed to create SRV", hr);
+
+	viewDescLinear = viewDesc;
+	viewDescLinear.Format = dxgiFormatViewLinear;
+
+	if (dxgiFormatView == dxgiFormatViewLinear) {
+		shaderResLinear = shaderRes;
+	} else {
+		hr = device->device->CreateShaderResourceView(
+			texture, &viewDescLinear, shaderResLinear.Assign());
+		if (FAILED(hr))
+			throw HRError("Failed to create linear SRV", hr);
+	}
 }
 
 void gs_texture_2d::InitRenderTargets()
@@ -194,18 +213,27 @@ void gs_texture_2d::InitRenderTargets()
 	HRESULT hr;
 	if (type == GS_TEXTURE_2D) {
 		D3D11_RENDER_TARGET_VIEW_DESC rtv;
-		rtv.Format = dxgiFormat;
+		rtv.Format = dxgiFormatView;
 		rtv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
 		rtv.Texture2D.MipSlice = 0;
 
 		hr = device->device->CreateRenderTargetView(
 			texture, &rtv, renderTarget[0].Assign());
 		if (FAILED(hr))
-			throw HRError("Failed to create render target view",
-				      hr);
+			throw HRError("Failed to create RTV", hr);
+		if (dxgiFormatView == dxgiFormatViewLinear) {
+			renderTargetLinear[0] = renderTarget[0];
+		} else {
+			rtv.Format = dxgiFormatViewLinear;
+			hr = device->device->CreateRenderTargetView(
+				texture, &rtv, renderTargetLinear[0].Assign());
+			if (FAILED(hr))
+				throw HRError("Failed to create linear RTV",
+					      hr);
+		}
 	} else {
 		D3D11_RENDER_TARGET_VIEW_DESC rtv;
-		rtv.Format = dxgiFormat;
+		rtv.Format = dxgiFormatView;
 		rtv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
 		rtv.Texture2DArray.MipSlice = 0;
 		rtv.Texture2DArray.ArraySize = 1;
@@ -215,9 +243,19 @@ void gs_texture_2d::InitRenderTargets()
 			hr = device->device->CreateRenderTargetView(
 				texture, &rtv, renderTarget[i].Assign());
 			if (FAILED(hr))
-				throw HRError("Failed to create cube render "
-					      "target view",
-					      hr);
+				throw HRError("Failed to create cube RTV", hr);
+			if (dxgiFormatView == dxgiFormatViewLinear) {
+				renderTargetLinear[i] = renderTarget[i];
+			} else {
+				rtv.Format = dxgiFormatViewLinear;
+				hr = device->device->CreateRenderTargetView(
+					texture, &rtv,
+					renderTargetLinear[i].Assign());
+				if (FAILED(hr))
+					throw HRError(
+						"Failed to create linear cube RTV",
+						hr);
+			}
 		}
 	}
 }
@@ -226,14 +264,16 @@ void gs_texture_2d::InitRenderTargets()
 
 gs_texture_2d::gs_texture_2d(gs_device_t *device, uint32_t width,
 			     uint32_t height, gs_color_format colorFormat,
-			     uint32_t levels, const uint8_t **data,
+			     uint32_t levels, const uint8_t *const *data,
 			     uint32_t flags_, gs_texture_type type,
 			     bool gdiCompatible, bool nv12_)
 	: gs_texture(device, gs_type::gs_texture_2d, type, levels, colorFormat),
 	  width(width),
 	  height(height),
 	  flags(flags_),
-	  dxgiFormat(ConvertGSTextureFormat(format)),
+	  dxgiFormatResource(ConvertGSTextureFormatResource(format)),
+	  dxgiFormatView(ConvertGSTextureFormatView(format)),
+	  dxgiFormatViewLinear(ConvertGSTextureFormatViewLinear(format)),
 	  isRenderTarget((flags_ & GS_RENDER_TARGET) != 0),
 	  isGDICompatible(gdiCompatible),
 	  isDynamic((flags_ & GS_DYNAMIC) != 0),
@@ -269,43 +309,73 @@ gs_texture_2d::gs_texture_2d(gs_device_t *device, ID3D11Texture2D *nv12tex,
 	this->chroma = true;
 	this->width = td.Width / 2;
 	this->height = td.Height / 2;
-	this->dxgiFormat = DXGI_FORMAT_R8G8_UNORM;
+	this->dxgiFormatResource = DXGI_FORMAT_R8G8_UNORM;
+	this->dxgiFormatView = DXGI_FORMAT_R8G8_UNORM;
+	this->dxgiFormatViewLinear = DXGI_FORMAT_R8G8_UNORM;
 
 	InitResourceView();
 	if (isRenderTarget)
 		InitRenderTargets();
 }
 
-gs_texture_2d::gs_texture_2d(gs_device_t *device, uint32_t handle)
+gs_texture_2d::gs_texture_2d(gs_device_t *device, uint32_t handle,
+			     bool ntHandle)
 	: gs_texture(device, gs_type::gs_texture_2d, GS_TEXTURE_2D),
 	  isShared(true),
 	  sharedHandle(handle)
 {
 	HRESULT hr;
-	hr = device->device->OpenSharedResource((HANDLE)(uintptr_t)handle,
-						__uuidof(ID3D11Texture2D),
-						(void **)texture.Assign());
+	if (ntHandle) {
+		ComQIPtr<ID3D11Device1> dev = device->device;
+		hr = dev->OpenSharedResource1((HANDLE)(uintptr_t)handle,
+					      __uuidof(ID3D11Texture2D),
+					      (void **)texture.Assign());
+	} else {
+		hr = device->device->OpenSharedResource(
+			(HANDLE)(uintptr_t)handle, __uuidof(ID3D11Texture2D),
+			(void **)texture.Assign());
+	}
+
 	if (FAILED(hr))
 		throw HRError("Failed to open shared 2D texture", hr);
 
 	texture->GetDesc(&td);
 
+	const gs_color_format format = ConvertDXGITextureFormat(td.Format);
+
 	this->type = GS_TEXTURE_2D;
-	this->format = ConvertDXGITextureFormat(td.Format);
+	this->format = format;
 	this->levels = 1;
 	this->device = device;
 
 	this->width = td.Width;
 	this->height = td.Height;
-	this->dxgiFormat = td.Format;
+	this->dxgiFormatResource = ConvertGSTextureFormatResource(format);
+	this->dxgiFormatView = ConvertGSTextureFormatView(format);
+	this->dxgiFormatViewLinear = ConvertGSTextureFormatViewLinear(format);
 
-	memset(&resourceDesc, 0, sizeof(resourceDesc));
-	resourceDesc.Format = td.Format;
-	resourceDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-	resourceDesc.Texture2D.MipLevels = 1;
+	InitResourceView();
+}
 
-	hr = device->device->CreateShaderResourceView(texture, &resourceDesc,
-						      shaderRes.Assign());
-	if (FAILED(hr))
-		throw HRError("Failed to create shader resource view", hr);
+gs_texture_2d::gs_texture_2d(gs_device_t *device, ID3D11Texture2D *obj)
+	: gs_texture(device, gs_type::gs_texture_2d, GS_TEXTURE_2D)
+{
+	texture = obj;
+
+	texture->GetDesc(&td);
+
+	const gs_color_format format = ConvertDXGITextureFormat(td.Format);
+
+	this->type = GS_TEXTURE_2D;
+	this->format = format;
+	this->levels = 1;
+	this->device = device;
+
+	this->width = td.Width;
+	this->height = td.Height;
+	this->dxgiFormatResource = ConvertGSTextureFormatResource(format);
+	this->dxgiFormatView = ConvertGSTextureFormatView(format);
+	this->dxgiFormatViewLinear = ConvertGSTextureFormatViewLinear(format);
+
+	InitResourceView();
 }

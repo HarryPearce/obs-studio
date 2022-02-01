@@ -22,73 +22,10 @@
 #include <util/darray.h>
 #include <util/platform.h>
 
-#include <libavutil/opt.h>
-#include <libavutil/pixdesc.h>
-#include <libavformat/avformat.h>
-#include <libswscale/swscale.h>
-
+#include "obs-ffmpeg-output.h"
 #include "obs-ffmpeg-formats.h"
-#include "closest-pixel-format.h"
 #include "obs-ffmpeg-compat.h"
-
-struct ffmpeg_cfg {
-	const char *url;
-	const char *format_name;
-	const char *format_mime_type;
-	const char *muxer_settings;
-	int gop_size;
-	int video_bitrate;
-	int audio_bitrate;
-	const char *video_encoder;
-	int video_encoder_id;
-	const char *audio_encoder;
-	int audio_encoder_id;
-	const char *video_settings;
-	const char *audio_settings;
-	int audio_mix_count;
-	int audio_tracks;
-	enum AVPixelFormat format;
-	enum AVColorRange color_range;
-	enum AVColorSpace color_space;
-	int scale_width;
-	int scale_height;
-	int width;
-	int height;
-};
-
-struct ffmpeg_data {
-	AVStream *video;
-	AVStream **audio_streams;
-	AVCodec *acodec;
-	AVCodec *vcodec;
-	AVFormatContext *output;
-	struct SwsContext *swscale;
-
-	int64_t total_frames;
-	AVFrame *vframe;
-	int frame_size;
-
-	uint64_t start_timestamp;
-
-	int64_t total_samples[MAX_AUDIO_MIXES];
-	uint32_t audio_samplerate;
-	enum audio_format audio_format;
-	size_t audio_planes;
-	size_t audio_size;
-	int num_audio_streams;
-
-	/* audio_tracks is a bitmask storing the indices of the mixes */
-	int audio_tracks;
-	struct circlebuf excess_frames[MAX_AUDIO_MIXES][MAX_AV_PLANES];
-	uint8_t *samples[MAX_AUDIO_MIXES][MAX_AV_PLANES];
-	AVFrame *aframe[MAX_AUDIO_MIXES];
-
-	struct ffmpeg_cfg config;
-
-	bool initialized;
-
-	char *last_error;
-};
+#include <libavutil/channel_layout.h>
 
 struct ffmpeg_output {
 	obs_output_t *output;
@@ -183,7 +120,8 @@ static bool parse_params(AVCodecContext *context, char **opts)
 			*assign = 0;
 			value = assign + 1;
 
-			if (av_opt_set(context->priv_data, name, value, 0)) {
+			if (av_opt_set(context, name, value,
+				       AV_OPT_SEARCH_CHILDREN)) {
 				blog(LOG_WARNING, "Failed to set %s=%s", name,
 				     value);
 				ret = false;
@@ -198,7 +136,7 @@ static bool parse_params(AVCodecContext *context, char **opts)
 
 static bool open_video_codec(struct ffmpeg_data *data)
 {
-	AVCodecContext *context = data->video->codec;
+	AVCodecContext *const context = data->video_ctx;
 	char **opts = strlist_split(data->config.video_settings, ' ', false);
 	int ret;
 
@@ -232,8 +170,10 @@ static bool open_video_codec(struct ffmpeg_data *data)
 	data->vframe->format = context->pix_fmt;
 	data->vframe->width = context->width;
 	data->vframe->height = context->height;
-	data->vframe->colorspace = data->config.color_space;
 	data->vframe->color_range = data->config.color_range;
+	data->vframe->color_primaries = data->config.color_primaries;
+	data->vframe->color_trc = data->config.color_trc;
+	data->vframe->colorspace = data->config.colorspace;
 
 	ret = av_frame_get_buffer(data->vframe, base_get_alignment());
 	if (ret < 0) {
@@ -242,6 +182,10 @@ static bool open_video_codec(struct ffmpeg_data *data)
 				 av_err2str(ret));
 		return false;
 	}
+
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
+	avcodec_parameters_from_context(data->video->codecpar, context);
+#endif
 
 	return true;
 }
@@ -278,24 +222,35 @@ static bool create_video_stream(struct ffmpeg_data *data)
 			data->config.video_encoder))
 		return false;
 
-	closest_format =
-		get_closest_format(data->config.format, data->vcodec->pix_fmts);
+	closest_format = data->config.format;
+	if (data->vcodec->pix_fmts) {
+		closest_format = avcodec_find_best_pix_fmt_of_list(
+			data->vcodec->pix_fmts, data->config.format, 0, NULL);
+	}
 
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
+	context = avcodec_alloc_context3(data->vcodec);
+#else
 	context = data->video->codec;
-	context->bit_rate = data->config.video_bitrate * 1000;
+#endif
+	context->bit_rate = (int64_t)data->config.video_bitrate * 1000;
 	context->width = data->config.scale_width;
 	context->height = data->config.scale_height;
 	context->time_base = (AVRational){ovi.fps_den, ovi.fps_num};
 	context->gop_size = data->config.gop_size;
 	context->pix_fmt = closest_format;
-	context->colorspace = data->config.color_space;
 	context->color_range = data->config.color_range;
+	context->color_primaries = data->config.color_primaries;
+	context->color_trc = data->config.color_trc;
+	context->colorspace = data->config.colorspace;
 	context->thread_count = 0;
 
 	data->video->time_base = context->time_base;
 
 	if (data->output->oformat->flags & AVFMT_GLOBALHEADER)
 		context->flags |= CODEC_FLAG_GLOBAL_H;
+
+	data->video_ctx = context;
 
 	if (!open_video_codec(data))
 		return false;
@@ -313,7 +268,7 @@ static bool create_video_stream(struct ffmpeg_data *data)
 
 static bool open_audio_codec(struct ffmpeg_data *data, int idx)
 {
-	AVCodecContext *context = data->audio_streams[idx]->codec;
+	AVCodecContext *const context = data->audio_infos[idx].ctx;
 	char **opts = strlist_split(data->config.audio_settings, ' ', false);
 	int ret;
 
@@ -355,6 +310,11 @@ static bool open_audio_codec(struct ffmpeg_data *data, int idx)
 		return false;
 	}
 
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
+	avcodec_parameters_from_context(data->audio_infos[idx].stream->codecpar,
+					context);
+#endif
+
 	return true;
 }
 
@@ -374,16 +334,19 @@ static bool create_audio_stream(struct ffmpeg_data *data, int idx)
 			data->config.audio_encoder))
 		return false;
 
-	data->audio_streams[idx] = stream;
-	context = data->audio_streams[idx]->codec;
-	context->bit_rate = data->config.audio_bitrate * 1000;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
+	context = avcodec_alloc_context3(data->acodec);
+#else
+	context = stream->codec;
+#endif
+	context->bit_rate = (int64_t)data->config.audio_bitrate * 1000;
 	context->time_base = (AVRational){1, aoi.samples_per_sec};
 	context->channels = get_audio_channels(aoi.speakers);
 	context->sample_rate = aoi.samples_per_sec;
 	context->channel_layout =
 		av_get_default_channel_layout(context->channels);
 
-	//AVlib default channel layout for 5 channels is 5.0 ; fix for 4.1
+	//avutil default channel layout for 5 channels is 5.0 ; fix for 4.1
 	if (aoi.speakers == SPEAKERS_4POINT1)
 		context->channel_layout = av_get_channel_layout("4.1");
 
@@ -391,7 +354,7 @@ static bool create_audio_stream(struct ffmpeg_data *data, int idx)
 				      ? data->acodec->sample_fmts[0]
 				      : AV_SAMPLE_FMT_FLTP;
 
-	data->audio_streams[idx]->time_base = context->time_base;
+	stream->time_base = context->time_base;
 
 	data->audio_samplerate = aoi.samples_per_sec;
 	data->audio_format = convert_ffmpeg_sample_format(context->sample_fmt);
@@ -400,6 +363,9 @@ static bool create_audio_stream(struct ffmpeg_data *data, int idx)
 
 	if (data->output->oformat->flags & AVFMT_GLOBALHEADER)
 		context->flags |= CODEC_FLAG_GLOBAL_H;
+
+	data->audio_infos[idx].stream = stream;
+	data->audio_infos[idx].ctx = context;
 
 	return open_audio_codec(data, idx);
 }
@@ -414,8 +380,8 @@ static inline bool init_streams(struct ffmpeg_data *data)
 
 	if (format->audio_codec != AV_CODEC_ID_NONE &&
 	    data->num_audio_streams) {
-		data->audio_streams =
-			calloc(1, data->num_audio_streams * sizeof(void *));
+		data->audio_infos = calloc(data->num_audio_streams,
+					   sizeof(*data->audio_infos));
 		for (int i = 0; i < data->num_audio_streams; i++) {
 			if (!create_audio_stream(data, i))
 				return false;
@@ -465,10 +431,6 @@ static inline bool open_output_file(struct ffmpeg_data *data)
 		}
 	}
 
-	strncpy(data->output->filename, data->config.url,
-		sizeof(data->output->filename));
-	data->output->filename[sizeof(data->output->filename) - 1] = 0;
-
 	ret = avformat_write_header(data->output, &dict);
 	if (ret < 0) {
 		ffmpeg_log_error(LOG_WARNING, data, "Error opening '%s': %s",
@@ -495,7 +457,11 @@ static inline bool open_output_file(struct ffmpeg_data *data)
 
 static void close_video(struct ffmpeg_data *data)
 {
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
+	avcodec_free_context(&data->video_ctx);
+#else
 	avcodec_close(data->video->codec);
+#endif
 	av_frame_unref(data->vframe);
 
 	// This format for some reason derefs video frame
@@ -515,24 +481,29 @@ static void close_audio(struct ffmpeg_data *data)
 
 		if (data->samples[idx][0])
 			av_freep(&data->samples[idx][0]);
-		if (data->audio_streams[idx])
-			avcodec_close(data->audio_streams[idx]->codec);
+		if (data->audio_infos[idx].ctx) {
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
+			avcodec_free_context(&data->audio_infos[idx].ctx);
+#else
+			avcodec_close(data->audio_infos[idx].stream->codec);
+#endif
+		}
 		if (data->aframe[idx])
 			av_frame_free(&data->aframe[idx]);
 	}
 }
 
-static void ffmpeg_data_free(struct ffmpeg_data *data)
+void ffmpeg_data_free(struct ffmpeg_data *data)
 {
 	if (data->initialized)
 		av_write_trailer(data->output);
 
 	if (data->video)
 		close_video(data);
-	if (data->audio_streams) {
+	if (data->audio_infos) {
 		close_audio(data);
-		free(data->audio_streams);
-		data->audio_streams = NULL;
+		free(data->audio_infos);
+		data->audio_infos = NULL;
 	}
 
 	if (data->output) {
@@ -573,6 +544,7 @@ static enum AVCodecID get_codec_id(const char *name, int id)
 	return codec->id;
 }
 
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(59, 0, 100)
 static void set_encoder_ids(struct ffmpeg_data *data)
 {
 	data->output->oformat->video_codec = get_codec_id(
@@ -581,9 +553,9 @@ static void set_encoder_ids(struct ffmpeg_data *data)
 	data->output->oformat->audio_codec = get_codec_id(
 		data->config.audio_encoder, data->config.audio_encoder_id);
 }
+#endif
 
-static bool ffmpeg_data_init(struct ffmpeg_data *data,
-			     struct ffmpeg_cfg *config)
+bool ffmpeg_data_init(struct ffmpeg_data *data, struct ffmpeg_cfg *config)
 {
 	bool is_rtmp = false;
 
@@ -594,12 +566,20 @@ static bool ffmpeg_data_init(struct ffmpeg_data *data,
 	if (!config->url || !*config->url)
 		return false;
 
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 9, 100)
 	av_register_all();
+#endif
 	avformat_network_init();
 
 	is_rtmp = (astrcmpi_n(config->url, "rtmp://", 7) == 0);
 
-	AVOutputFormat *output_format = av_guess_format(
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(59, 0, 100)
+	AVOutputFormat *output_format;
+#else
+	const AVOutputFormat *output_format;
+#endif
+
+	output_format = av_guess_format(
 		is_rtmp ? "flv" : data->config.format_name, data->config.url,
 		is_rtmp ? NULL : data->config.format_mime_type);
 
@@ -617,7 +597,7 @@ static bool ffmpeg_data_init(struct ffmpeg_data *data,
 	}
 
 	avformat_alloc_output_context2(&data->output, output_format, NULL,
-				       NULL);
+				       data->config.url);
 
 	if (!data->output) {
 		ffmpeg_log_error(LOG_WARNING, data,
@@ -625,6 +605,7 @@ static bool ffmpeg_data_init(struct ffmpeg_data *data,
 		goto fail;
 	}
 
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(59, 0, 100)
 	if (is_rtmp) {
 		data->output->oformat->video_codec = AV_CODEC_ID_H264;
 		data->output->oformat->audio_codec = AV_CODEC_ID_AAC;
@@ -632,6 +613,14 @@ static bool ffmpeg_data_init(struct ffmpeg_data *data,
 		if (data->config.format_name)
 			set_encoder_ids(data);
 	}
+#else
+	if (is_rtmp) {
+		data->config.audio_encoder = "aac";
+		data->config.audio_encoder_id = AV_CODEC_ID_AAC;
+		data->config.video_encoder = "libx264";
+		data->config.video_encoder_id = AV_CODEC_ID_H264;
+	}
+#endif
 
 	if (!init_streams(data))
 		goto fail;
@@ -750,7 +739,7 @@ static void receive_video(void *param, struct video_data *frame)
 	if (!data->video)
 		return;
 
-	AVCodecContext *context = data->video->codec;
+	AVCodecContext *context = data->video_ctx;
 	AVPacket packet = {0};
 	int ret = 0, got_packet;
 
@@ -761,6 +750,15 @@ static void receive_video(void *param, struct video_data *frame)
 	if (!data->start_timestamp)
 		data->start_timestamp = frame->timestamp;
 
+	ret = av_frame_make_writable(data->vframe);
+	if (ret < 0) {
+		blog(LOG_WARNING,
+		     "receive_video: Error obtaining writable "
+		     "AVFrame: %s",
+		     av_err2str(ret));
+		//FIXME: stop the encode with an error
+		return;
+	}
 	if (!!data->swscale)
 		sws_scale(data->swscale, (const uint8_t *const *)frame->data,
 			  (const int *)frame->linesize, 0, data->config.height,
@@ -886,46 +884,18 @@ static void encode_audio(struct ffmpeg_output *output, int idx,
 		return;
 
 	packet.pts = rescale_ts(packet.pts, context,
-				data->audio_streams[idx]->time_base);
+				data->audio_infos[idx].stream->time_base);
 	packet.dts = rescale_ts(packet.dts, context,
-				data->audio_streams[idx]->time_base);
+				data->audio_infos[idx].stream->time_base);
 	packet.duration =
 		(int)av_rescale_q(packet.duration, context->time_base,
-				  data->audio_streams[idx]->time_base);
-	packet.stream_index = data->audio_streams[idx]->index;
+				  data->audio_infos[idx].stream->time_base);
+	packet.stream_index = data->audio_infos[idx].stream->index;
 
 	pthread_mutex_lock(&output->write_mutex);
 	da_push_back(output->packets, &packet);
 	pthread_mutex_unlock(&output->write_mutex);
 	os_sem_post(output->write_sem);
-}
-
-static bool prepare_audio(struct ffmpeg_data *data,
-			  const struct audio_data *frame,
-			  struct audio_data *output)
-{
-	*output = *frame;
-
-	if (frame->timestamp < data->start_timestamp) {
-		uint64_t duration = (uint64_t)frame->frames * 1000000000 /
-				    (uint64_t)data->audio_samplerate;
-		uint64_t end_ts = (frame->timestamp + duration);
-		uint64_t cutoff;
-
-		if (end_ts <= data->start_timestamp)
-			return false;
-
-		cutoff = data->start_timestamp - frame->timestamp;
-		output->timestamp += cutoff;
-
-		cutoff = cutoff * (uint64_t)data->audio_samplerate / 1000000000;
-
-		for (size_t i = 0; i < data->audio_planes; i++)
-			output->data[i] += data->audio_size * (uint32_t)cutoff;
-		output->frames -= (uint32_t)cutoff;
-	}
-
-	return true;
 }
 
 /* Given a bitmask for the selected tracks and the mix index,
@@ -945,11 +915,11 @@ static void receive_audio(void *param, size_t mix_idx, struct audio_data *frame)
 	struct ffmpeg_output *output = param;
 	struct ffmpeg_data *data = &output->ff_data;
 	size_t frame_size_bytes;
-	struct audio_data in;
+	struct audio_data in = *frame;
 	int track_order;
 
 	// codec doesn't support audio or none configured
-	if (!data->audio_streams)
+	if (!data->audio_infos)
 		return;
 
 	/* check that the track was selected */
@@ -959,11 +929,9 @@ static void receive_audio(void *param, size_t mix_idx, struct audio_data *frame)
 	/* get track order (first selected, etc ...) */
 	track_order = get_track_order(data->audio_tracks, mix_idx);
 
-	AVCodecContext *context = data->audio_streams[track_order]->codec;
+	AVCodecContext *context = data->audio_infos[track_order].ctx;
 
-	if (!data->start_timestamp)
-		return;
-	if (!prepare_audio(data, frame, &in))
+	if (!data->start_timestamp && data->video)
 		return;
 
 	if (!output->audio_start_ts)
@@ -990,6 +958,7 @@ static uint64_t get_packet_sys_dts(struct ffmpeg_output *output,
 				   AVPacket *packet)
 {
 	struct ffmpeg_data *data = &output->ff_data;
+	uint64_t pause_offset = obs_output_get_pause_offset(output->output);
 	uint64_t start_ts;
 
 	AVRational time_base;
@@ -998,12 +967,13 @@ static uint64_t get_packet_sys_dts(struct ffmpeg_output *output,
 		time_base = data->video->time_base;
 		start_ts = output->video_start_ts;
 	} else {
-		time_base = data->audio_streams[0]->time_base;
+		time_base = data->audio_infos[0].stream->time_base;
 		start_ts = output->audio_start_ts;
 	}
 
-	return start_ts + (uint64_t)av_rescale_q(packet->dts, time_base,
-						 (AVRational){1, 1000000000});
+	return start_ts + pause_offset +
+	       (uint64_t)av_rescale_q(packet->dts, time_base,
+				      (AVRational){1, 1000000000});
 }
 
 static int process_packet(struct ffmpeg_output *output)
@@ -1030,10 +1000,8 @@ static int process_packet(struct ffmpeg_output *output)
 
 	if (stopping(output)) {
 		uint64_t sys_ts = get_packet_sys_dts(output, &packet);
-		if (sys_ts >= output->stop_ts) {
-			ffmpeg_output_full_stop(output);
+		if (sys_ts >= output->stop_ts)
 			return 0;
-		}
 	}
 
 	output->total_bytes += packet.size;
@@ -1042,7 +1010,7 @@ static int process_packet(struct ffmpeg_output *output)
 	if (ret < 0) {
 		av_free_packet(&packet);
 		ffmpeg_log_error(LOG_WARNING, &output->ff_data,
-				 "receive_audio: Error writing packet: %s",
+				 "process_packet: Error writing packet: %s",
 				 av_err2str(ret));
 		return ret;
 	}
@@ -1138,16 +1106,30 @@ static bool try_connect(struct ffmpeg_output *output)
 	config.audio_tracks = (int)obs_output_get_mixers(output->output);
 	config.audio_mix_count = get_audio_mix_count(config.audio_tracks);
 
+	config.color_range = voi->range == VIDEO_RANGE_FULL ? AVCOL_RANGE_JPEG
+							    : AVCOL_RANGE_MPEG;
+	switch (voi->colorspace) {
+	case VIDEO_CS_601:
+		config.color_primaries = AVCOL_PRI_SMPTE170M;
+		config.color_trc = AVCOL_TRC_SMPTE170M;
+		break;
+	case VIDEO_CS_DEFAULT:
+	case VIDEO_CS_709:
+		config.color_primaries = AVCOL_PRI_BT709;
+		config.color_trc = AVCOL_TRC_BT709;
+		break;
+	case VIDEO_CS_SRGB:
+		config.color_primaries = AVCOL_PRI_BT709;
+		config.color_trc = AVCOL_TRC_IEC61966_2_1;
+		break;
+	}
+
 	if (format_is_yuv(voi->format)) {
-		config.color_range = voi->range == VIDEO_RANGE_FULL
-					     ? AVCOL_RANGE_JPEG
-					     : AVCOL_RANGE_MPEG;
-		config.color_space = voi->colorspace == VIDEO_CS_709
-					     ? AVCOL_SPC_BT709
-					     : AVCOL_SPC_BT470BG;
+		config.colorspace = (voi->colorspace == VIDEO_CS_601)
+					    ? AVCOL_SPC_SMPTE170M
+					    : AVCOL_SPC_BT709;
 	} else {
-		config.color_range = AVCOL_RANGE_UNSPECIFIED;
-		config.color_space = AVCOL_SPC_RGB;
+		config.colorspace = AVCOL_SPC_RGB;
 	}
 
 	if (config.format == AV_PIX_FMT_NONE) {
@@ -1240,12 +1222,12 @@ static void ffmpeg_output_stop(void *data, uint64_t ts)
 	struct ffmpeg_output *output = data;
 
 	if (output->active) {
-		if (ts == 0) {
-			ffmpeg_output_full_stop(output);
-		} else {
-			os_atomic_set_bool(&output->stopping, true);
+		if (ts > 0) {
 			output->stop_ts = ts;
+			os_atomic_set_bool(&output->stopping, true);
 		}
+
+		ffmpeg_output_full_stop(output);
 	}
 }
 
@@ -1277,7 +1259,8 @@ static uint64_t ffmpeg_output_total_bytes(void *data)
 
 struct obs_output_info ffmpeg_output = {
 	.id = "ffmpeg_output",
-	.flags = OBS_OUTPUT_AUDIO | OBS_OUTPUT_VIDEO | OBS_OUTPUT_MULTI_TRACK,
+	.flags = OBS_OUTPUT_AUDIO | OBS_OUTPUT_VIDEO | OBS_OUTPUT_MULTI_TRACK |
+		 OBS_OUTPUT_CAN_PAUSE,
 	.get_name = ffmpeg_output_getname,
 	.create = ffmpeg_output_create,
 	.destroy = ffmpeg_output_destroy,

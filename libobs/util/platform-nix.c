@@ -34,13 +34,16 @@
 #include <sys/times.h>
 #include <sys/wait.h>
 #include <libgen.h>
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
+#include <sys/sysctl.h>
 #include <sys/user.h>
 #include <unistd.h>
+#if defined(__FreeBSD__)
 #include <libprocstat.h>
+#endif
 #else
 #include <sys/resource.h>
 #endif
@@ -89,6 +92,14 @@ void os_dlclose(void *module)
 {
 	if (module)
 		dlclose(module);
+}
+
+bool os_is_obs_plugin(const char *path)
+{
+	UNUSED_PARAMETER(path);
+
+	/* not necessary on this platform */
+	return true;
 }
 
 #if !defined(__APPLE__)
@@ -271,10 +282,84 @@ char *os_get_program_data_path_ptr(const char *name)
 	return str;
 }
 
+#if defined(__OpenBSD__)
+// a bit modified version of https://stackoverflow.com/a/31495527
+ssize_t os_openbsd_get_executable_path(char *epath)
+{
+	int mib[4];
+	char **argv;
+	size_t len;
+	const char *comm;
+	int ok = 0;
+
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_PROC_ARGS;
+	mib[2] = getpid();
+	mib[3] = KERN_PROC_ARGV;
+
+	if (sysctl(mib, 4, NULL, &len, NULL, 0) < 0)
+		abort();
+
+	if (!(argv = malloc(len)))
+		abort();
+
+	if (sysctl(mib, 4, argv, &len, NULL, 0) < 0)
+		abort();
+
+	comm = argv[0];
+
+	if (*comm == '/' || *comm == '.') {
+		if (realpath(comm, epath))
+			ok = 1;
+	} else {
+		char *sp;
+		char *xpath = strdup(getenv("PATH"));
+		char *path = strtok_r(xpath, ":", &sp);
+		struct stat st;
+
+		if (!xpath)
+			abort();
+
+		while (path) {
+			snprintf(epath, PATH_MAX, "%s/%s", path, comm);
+
+			if (!stat(epath, &st) && (st.st_mode & S_IXUSR)) {
+				ok = 1;
+				break;
+			}
+			path = strtok_r(NULL, ":", &sp);
+		}
+
+		free(xpath);
+	}
+
+	free(argv);
+	return ok ? (ssize_t)strlen(epath) : -1;
+}
+#endif
+
 char *os_get_executable_path_ptr(const char *name)
 {
 	char exe[PATH_MAX];
-	ssize_t count = readlink("/proc/self/exe", exe, PATH_MAX);
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+	int sysctlname[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+	size_t pathlen = PATH_MAX;
+	ssize_t count;
+	if (sysctl(sysctlname, nitems(sysctlname), exe, &pathlen, NULL, 0) ==
+	    -1) {
+		blog(LOG_ERROR, "sysctl(KERN_PROC_PATHNAME) failed, errno %d",
+		     errno);
+		return NULL;
+	}
+	count = pathlen;
+#elif defined(__OpenBSD__)
+	ssize_t count = os_openbsd_get_executable_path(exe);
+#else
+	ssize_t count = readlink("/proc/self/exe", exe, PATH_MAX - 1);
+	if (count >= 0) {
+		exe[count] = '\0';
+	}
+#endif
 	const char *path_out = NULL;
 	struct dstr path;
 
@@ -375,7 +460,10 @@ struct os_dirent *os_readdir(os_dir_t *dir)
 	if (!dir->cur_dirent)
 		return NULL;
 
-	strncpy(dir->out.d_name, dir->cur_dirent->d_name, 255);
+	const size_t length = strlen(dir->cur_dirent->d_name);
+	if (sizeof(dir->out.d_name) <= length)
+		return NULL;
+	memcpy(dir->out.d_name, dir->cur_dirent->d_name, length + 1);
 
 	dstr_copy(&file_path, dir->path);
 	dstr_cat(&file_path, "/");
@@ -543,16 +631,23 @@ int os_chdir(const char *path)
 
 #if HAVE_DBUS
 struct dbus_sleep_info;
+struct portal_inhibit_info;
 
 extern struct dbus_sleep_info *dbus_sleep_info_create(void);
 extern void dbus_inhibit_sleep(struct dbus_sleep_info *dbus, const char *sleep,
 			       bool active);
 extern void dbus_sleep_info_destroy(struct dbus_sleep_info *dbus);
+
+extern struct portal_inhibit_info *portal_inhibit_info_create(void);
+extern void portal_inhibit(struct portal_inhibit_info *portal,
+			   const char *reason, bool active);
+extern void portal_inhibit_info_destroy(struct portal_inhibit_info *portal);
 #endif
 
 struct os_inhibit_info {
 #if HAVE_DBUS
 	struct dbus_sleep_info *dbus;
+	struct portal_inhibit_info *portal;
 #endif
 	pthread_t screensaver_thread;
 	os_event_t *stop_event;
@@ -567,7 +662,9 @@ os_inhibit_t *os_inhibit_sleep_create(const char *reason)
 	sigset_t set;
 
 #if HAVE_DBUS
-	info->dbus = dbus_sleep_info_create();
+	info->portal = portal_inhibit_info_create();
+	if (!info->portal)
+		info->dbus = dbus_sleep_info_create();
 #endif
 
 	os_event_init(&info->stop_event, OS_EVENT_TYPE_AUTO);
@@ -622,6 +719,8 @@ bool os_inhibit_sleep_set_active(os_inhibit_t *info, bool active)
 		return false;
 
 #if HAVE_DBUS
+	if (info->portal)
+		portal_inhibit(info->portal, info->reason, active);
 	if (info->dbus)
 		dbus_inhibit_sleep(info->dbus, info->reason, active);
 #endif
@@ -651,6 +750,7 @@ void os_inhibit_sleep_destroy(os_inhibit_t *info)
 	if (info) {
 		os_inhibit_sleep_set_active(info, false);
 #if HAVE_DBUS
+		portal_inhibit_info_destroy(info->portal);
 		dbus_sleep_info_destroy(info->dbus);
 #endif
 		os_event_destroy(info->stop_event);
@@ -901,7 +1001,8 @@ bool os_get_proc_memory_usage(os_proc_memory_usage_t *usage)
 	if (!os_get_proc_memory_usage_internal(&statm))
 		return false;
 
-	usage->resident_size = statm.resident_size;
+	usage->resident_size =
+		(uint64_t)statm.resident_size * sysconf(_SC_PAGESIZE);
 	usage->virtual_size = statm.virtual_size;
 	return true;
 }
@@ -911,7 +1012,7 @@ uint64_t os_get_proc_resident_size(void)
 	statm_t statm = {};
 	if (!os_get_proc_memory_usage_internal(&statm))
 		return 0;
-	return (uint64_t)statm.resident_size;
+	return (uint64_t)statm.resident_size * sysconf(_SC_PAGESIZE);
 }
 
 uint64_t os_get_proc_virtual_size(void)

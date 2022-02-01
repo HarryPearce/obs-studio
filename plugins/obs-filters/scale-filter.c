@@ -36,7 +36,9 @@ struct scale_filter_data {
 	gs_effect_t *effect;
 	gs_eparam_t *image_param;
 	gs_eparam_t *dimension_param;
+	gs_eparam_t *dimension_i_param;
 	gs_eparam_t *undistort_factor_param;
+	struct vec2 dimension;
 	struct vec2 dimension_i;
 	double undistort_factor;
 	int cx_in;
@@ -49,6 +51,7 @@ struct scale_filter_data {
 	bool target_valid;
 	bool valid;
 	bool undistort;
+	bool upscale;
 	bool base_canvas_resolution;
 };
 
@@ -192,9 +195,7 @@ static void scale_filter_tick(void *data, float seconds)
 		} else {
 			if (new_aspect > old_aspect) {
 				filter->cx_out = (int)(cy_f * new_aspect);
-				filter->cy_out = cy;
 			} else {
-				filter->cx_out = cx;
 				filter->cy_out = (int)(cx_f / new_aspect);
 			}
 		}
@@ -203,6 +204,7 @@ static void scale_filter_tick(void *data, float seconds)
 		filter->cy_out = filter->cy_in;
 	}
 
+	vec2_set(&filter->dimension, (float)cx, (float)cy);
 	vec2_set(&filter->dimension_i, 1.0f / (float)cx, 1.0f / (float)cy);
 
 	if (filter->undistort) {
@@ -210,6 +212,8 @@ static void scale_filter_tick(void *data, float seconds)
 	} else {
 		filter->undistort_factor = 1.0;
 	}
+
+	filter->upscale = false;
 
 	/* ------------------------- */
 
@@ -232,6 +236,8 @@ static void scale_filter_tick(void *data, float seconds)
 			break;
 		case OBS_SCALE_AREA:
 			type = OBS_EFFECT_AREA;
+			if ((filter->cx_out >= cx) && (filter->cy_out >= cy))
+				filter->upscale = true;
 			break;
 		}
 	}
@@ -242,9 +248,12 @@ static void scale_filter_tick(void *data, float seconds)
 
 	if (type != OBS_EFFECT_DEFAULT) {
 		filter->dimension_param = gs_effect_get_param_by_name(
+			filter->effect, "base_dimension");
+		filter->dimension_i_param = gs_effect_get_param_by_name(
 			filter->effect, "base_dimension_i");
 	} else {
 		filter->dimension_param = NULL;
+		filter->dimension_i_param = NULL;
 	}
 
 	if (type == OBS_EFFECT_BICUBIC || type == OBS_EFFECT_LANCZOS) {
@@ -260,7 +269,9 @@ static void scale_filter_tick(void *data, float seconds)
 static void scale_filter_render(void *data, gs_effect_t *effect)
 {
 	struct scale_filter_data *filter = data;
-	const char *technique = filter->undistort ? "DrawUndistort" : "Draw";
+	const char *technique =
+		filter->undistort ? "DrawUndistort"
+				  : (filter->upscale ? "DrawUpscale" : "Draw");
 
 	if (!filter->valid || !filter->target_valid) {
 		obs_source_skip_video_filter(filter->context);
@@ -272,7 +283,10 @@ static void scale_filter_render(void *data, gs_effect_t *effect)
 		return;
 
 	if (filter->dimension_param)
-		gs_effect_set_vec2(filter->dimension_param,
+		gs_effect_set_vec2(filter->dimension_param, &filter->dimension);
+
+	if (filter->dimension_i_param)
+		gs_effect_set_vec2(filter->dimension_i_param,
 				   &filter->dimension_i);
 
 	if (filter->undistort_factor_param)
@@ -283,9 +297,14 @@ static void scale_filter_render(void *data, gs_effect_t *effect)
 		gs_effect_set_next_sampler(filter->image_param,
 					   filter->point_sampler);
 
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+
 	obs_source_process_filter_tech_end(filter->context, filter->effect,
 					   filter->cx_out, filter->cy_out,
 					   technique);
+
+	gs_blend_state_pop();
 
 	UNUSED_PARAMETER(effect);
 }
@@ -408,7 +427,7 @@ static uint32_t scale_filter_height(void *data)
 struct obs_source_info scale_filter = {
 	.id = "scale_filter",
 	.type = OBS_SOURCE_TYPE_FILTER,
-	.output_flags = OBS_SOURCE_VIDEO,
+	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_SRGB,
 	.get_name = scale_filter_name,
 	.create = scale_filter_create,
 	.destroy = scale_filter_destroy,

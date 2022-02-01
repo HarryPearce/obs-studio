@@ -24,6 +24,7 @@
 #include "util/threading.h"
 #include "util/platform.h"
 #include "util/profiler.h"
+#include "util/task.h"
 #include "callback/signal.h"
 #include "callback/proc.h"
 
@@ -36,7 +37,10 @@
 
 #include "obs.h"
 
+#include <caption/caption.h>
+
 #define NUM_TEXTURES 2
+#define NUM_CHANNELS 3
 #define MICROSECOND_DEN 1000000
 #define NUM_ENCODE_TEXTURES 3
 #define NUM_ENCODE_TEXTURE_FRAMES_TO_WAIT 1
@@ -91,6 +95,8 @@ struct obs_module {
 	void (*unload)(void);
 	void (*post_load)(void);
 	void (*set_locale)(const char *locale);
+	bool (*get_string)(const char *lookup_string,
+			   const char **translated_string);
 	void (*free_locale)(void);
 	uint32_t (*ver)(void);
 	void (*set_pointer)(obs_module_t *module);
@@ -233,13 +239,17 @@ struct obs_tex_frame {
 	bool released;
 };
 
+struct obs_task_info {
+	obs_task_t task;
+	void *param;
+};
+
 struct obs_core_video {
 	graphics_t *graphics;
-	gs_stagesurf_t *copy_surfaces[NUM_TEXTURES];
+	gs_stagesurf_t *copy_surfaces[NUM_TEXTURES][NUM_CHANNELS];
 	gs_texture_t *render_texture;
 	gs_texture_t *output_texture;
-	gs_texture_t *convert_texture;
-	gs_texture_t *convert_uv_texture;
+	gs_texture_t *convert_textures[NUM_CHANNELS];
 	bool texture_rendered;
 	bool textures_copied[NUM_TEXTURES];
 	bool texture_converted;
@@ -258,10 +268,10 @@ struct obs_core_video {
 	gs_effect_t *bilinear_lowres_effect;
 	gs_effect_t *premultiplied_alpha_effect;
 	gs_samplerstate_t *point_sampler;
-	gs_stagesurf_t *mapped_surface;
+	gs_stagesurf_t *mapped_surfaces[NUM_CHANNELS];
 	int cur_texture;
-	long raw_active;
-	long gpu_encoder_active;
+	volatile long raw_active;
+	volatile long gpu_encoder_active;
 	pthread_mutex_t gpu_encoder_mutex;
 	struct circlebuf gpu_encoder_queue;
 	struct circlebuf gpu_encoder_avail_queue;
@@ -273,6 +283,7 @@ struct obs_core_video {
 	volatile bool gpu_encode_stop;
 
 	uint64_t video_time;
+	uint64_t video_frame_interval_ns;
 	uint64_t video_avg_frame_time_ns;
 	double video_fps;
 	video_t *video;
@@ -282,11 +293,9 @@ struct obs_core_video {
 	bool thread_initialized;
 
 	bool gpu_conversion;
-	const char *conversion_tech;
-	uint32_t conversion_height;
-	uint32_t plane_offsets[3];
-	uint32_t plane_sizes[3];
-	uint32_t plane_linewidth[3];
+	const char *conversion_techs[NUM_CHANNELS];
+	bool conversion_needed;
+	float conversion_width_i;
 
 	uint32_t output_width;
 	uint32_t output_height;
@@ -307,6 +316,9 @@ struct obs_core_video {
 	gs_effect_t *deinterlace_yadif_2x_effect;
 
 	struct obs_video_info ovi;
+
+	pthread_mutex_t task_mutex;
+	struct circlebuf tasks;
 };
 
 struct audio_monitor;
@@ -319,7 +331,7 @@ struct obs_core_audio {
 
 	uint64_t buffered_ts;
 	struct circlebuf buffered_timestamps;
-	int buffering_wait_ticks;
+	uint64_t buffering_wait_ticks;
 	int total_buffering_ticks;
 
 	float user_volume;
@@ -328,6 +340,9 @@ struct obs_core_audio {
 	DARRAY(struct audio_monitor *) monitors;
 	char *monitoring_device_name;
 	char *monitoring_device_id;
+
+	pthread_mutex_t task_mutex;
+	struct circlebuf tasks;
 };
 
 /* user sources, output channels, and displays */
@@ -421,11 +436,35 @@ struct obs_core {
 	struct obs_core_audio audio;
 	struct obs_core_data data;
 	struct obs_core_hotkeys hotkeys;
+
+	os_task_queue_t *destruction_task_thread;
+
+	obs_task_handler_t ui_task_handler;
 };
 
 extern struct obs_core *obs;
 
+struct obs_graphics_context {
+	uint64_t last_time;
+	uint64_t interval;
+	uint64_t frame_time_total_ns;
+	uint64_t fps_total_ns;
+	uint32_t fps_total_frames;
+#ifdef _WIN32
+	bool gpu_was_active;
+#endif
+	bool raw_was_active;
+	bool was_active;
+	const char *video_thread_name;
+};
+
 extern void *obs_graphics_thread(void *param);
+extern bool obs_graphics_thread_loop(struct obs_graphics_context *context);
+#ifdef __APPLE__
+extern void *obs_graphics_thread_autorelease(void *param);
+extern bool
+obs_graphics_thread_loop_autorelease(struct obs_graphics_context *context);
+#endif
 
 extern gs_effect_t *obs_load_effect(gs_effect_t **effect, const char *file);
 
@@ -476,6 +515,7 @@ extern void obs_context_data_free(struct obs_context_data *context);
 extern void obs_context_data_insert(struct obs_context_data *context,
 				    pthread_mutex_t *mutex, void *first);
 extern void obs_context_data_remove(struct obs_context_data *context);
+extern void obs_context_wait(struct obs_context_data *context);
 
 extern void obs_context_data_setname(struct obs_context_data *context,
 				     const char *name);
@@ -510,15 +550,21 @@ static inline bool obs_weak_ref_release(struct obs_weak_ref *ref)
 
 static inline bool obs_weak_ref_get_ref(struct obs_weak_ref *ref)
 {
-	long owners = ref->refs;
+	long owners = os_atomic_load_long(&ref->refs);
 	while (owners > -1) {
-		if (os_atomic_compare_swap_long(&ref->refs, owners, owners + 1))
+		if (os_atomic_compare_exchange_long(&ref->refs, &owners,
+						    owners + 1)) {
 			return true;
-
-		owners = ref->refs;
+		}
 	}
 
 	return false;
+}
+
+static inline bool obs_weak_ref_expired(struct obs_weak_ref *ref)
+{
+	long owners = os_atomic_load_long(&ref->refs);
+	return owners < 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -556,6 +602,11 @@ struct audio_cb_info {
 	void *param;
 };
 
+struct caption_cb_info {
+	obs_source_caption_t callback;
+	void *param;
+};
+
 struct obs_source {
 	struct obs_context_data context;
 	struct obs_source_info info;
@@ -564,12 +615,13 @@ struct obs_source {
 	/* general exposed flags that can be set for the source */
 	uint32_t flags;
 	uint32_t default_flags;
+	uint32_t last_obs_ver;
 
 	/* indicates ownership of the info.id buffer */
 	bool owns_info_id;
 
 	/* signals to call the source update in the video thread */
-	bool defer_update;
+	long defer_update_count;
 
 	/* ensures show/hide are only called once */
 	volatile long show_refs;
@@ -577,16 +629,25 @@ struct obs_source {
 	/* ensures activate/deactivate are only called once */
 	volatile long activate_refs;
 
+	/* source is in the process of being destroyed */
+	volatile long destroying;
+
 	/* used to indicate that the source has been removed and all
 	 * references to it should be released (not exactly how I would prefer
 	 * to handle things but it's the best option) */
 	bool removed;
+
+	/*  used to indicate if the source should show up when queried for user ui */
+	bool temp_removed;
 
 	bool active;
 	bool showing;
 
 	/* used to temporarily disable sources if needed */
 	bool enabled;
+
+	/* hint to allow sources to render more quickly */
+	bool texcoords_centered;
 
 	/* timing (if video is present, is based upon video) */
 	volatile bool timing_set;
@@ -603,6 +664,7 @@ struct obs_source {
 	bool audio_failed;
 	bool audio_pending;
 	bool pending_stop;
+	bool audio_active;
 	bool user_muted;
 	bool muted;
 	struct obs_source *next_audio_source;
@@ -612,6 +674,7 @@ struct obs_source {
 	size_t last_audio_input_buf_size;
 	DARRAY(struct audio_action) audio_actions;
 	float *audio_output_buf[MAX_AUDIO_MIXES][MAX_AUDIO_CHANNELS];
+	float *audio_mix_buf[MAX_AUDIO_CHANNELS];
 	struct resample_info sample_info;
 	audio_resampler_t *resampler;
 	pthread_mutex_t audio_actions_mutex;
@@ -629,7 +692,7 @@ struct obs_source {
 	float balance;
 
 	/* async video data */
-	gs_texture_t *async_texture;
+	gs_texture_t *async_textures[MAX_AV_PLANES];
 	gs_texrender_t *async_texrender;
 	struct obs_source_frame *cur_async_frame;
 	bool async_gpu_conversion;
@@ -637,9 +700,11 @@ struct obs_source {
 	bool async_full_range;
 	enum video_format async_cache_format;
 	bool async_cache_full_range;
-	enum gs_color_format async_texture_format;
-	int async_plane_offset[2];
+	enum gs_color_format async_texture_formats[MAX_AV_PLANES];
+	int async_channel_count;
+	long async_rotation;
 	bool async_flip;
+	bool async_linear_alpha;
 	bool async_active;
 	bool async_update_texture;
 	bool async_unbuffered;
@@ -652,15 +717,18 @@ struct obs_source {
 	uint32_t async_height;
 	uint32_t async_cache_width;
 	uint32_t async_cache_height;
-	uint32_t async_convert_width;
-	uint32_t async_convert_height;
+	uint32_t async_convert_width[MAX_AV_PLANES];
+	uint32_t async_convert_height[MAX_AV_PLANES];
+
+	pthread_mutex_t caption_cb_mutex;
+	DARRAY(struct caption_cb_info) caption_cb_list;
 
 	/* async video deinterlacing */
 	uint64_t deinterlace_offset;
 	uint64_t deinterlace_frame_ts;
 	gs_effect_t *deinterlace_effect;
 	struct obs_source_frame *prev_async_frame;
-	gs_texture_t *async_prev_texture;
+	gs_texture_t *async_prev_textures[MAX_AV_PLANES];
 	gs_texrender_t *async_prev_texrender;
 	uint32_t deinterlace_half_duration;
 	enum obs_deinterlace_mode deinterlace_mode;
@@ -698,6 +766,10 @@ struct obs_source {
 	gs_texrender_t *transition_texrender[2];
 	pthread_mutex_t transition_mutex;
 	obs_source_t *transition_sources[2];
+	float transition_manual_clamp;
+	float transition_manual_torque;
+	float transition_manual_target;
+	float transition_manual_val;
 	bool transitioning_video;
 	bool transitioning_audio;
 	bool transition_source_active[2];
@@ -719,13 +791,15 @@ struct obs_source {
 };
 
 extern struct obs_source_info *get_source_info(const char *id);
+extern struct obs_source_info *get_source_info2(const char *unversioned_id,
+						uint32_t ver);
 extern bool obs_source_init_context(struct obs_source *source,
 				    obs_data_t *settings, const char *name,
 				    obs_data_t *hotkey_data, bool private);
 
 extern bool obs_transition_init(obs_source_t *transition);
 extern void obs_transition_free(obs_source_t *transition);
-extern void obs_transition_tick(obs_source_t *transition);
+extern void obs_transition_tick(obs_source_t *transition, float t);
 extern void obs_transition_enum_sources(obs_source_t *transition,
 					obs_source_enum_proc_t enum_callback,
 					void *param);
@@ -736,6 +810,11 @@ struct audio_monitor *audio_monitor_create(obs_source_t *source);
 void audio_monitor_reset(struct audio_monitor *monitor);
 extern void audio_monitor_destroy(struct audio_monitor *monitor);
 
+extern obs_source_t *obs_source_create_set_last_ver(const char *id,
+						    const char *name,
+						    obs_data_t *settings,
+						    obs_data_t *hotkey_data,
+						    uint32_t last_obs_ver);
 extern void obs_source_destroy(struct obs_source *source);
 
 enum view_type {
@@ -773,14 +852,22 @@ static inline bool frame_out_of_bounds(const obs_source_t *source, uint64_t ts)
 static inline enum gs_color_format
 convert_video_format(enum video_format format)
 {
-	if (format == VIDEO_FORMAT_RGBA)
+	switch (format) {
+	case VIDEO_FORMAT_RGBA:
 		return GS_RGBA;
-	else if (format == VIDEO_FORMAT_BGRA)
+	case VIDEO_FORMAT_BGRA:
+	case VIDEO_FORMAT_I40A:
+	case VIDEO_FORMAT_I42A:
+	case VIDEO_FORMAT_YUVA:
+	case VIDEO_FORMAT_AYUV:
 		return GS_BGRA;
-
-	return GS_BGRX;
+	default:
+		return GS_BGRX;
+	}
 }
 
+extern void obs_source_set_texcoords_centered(obs_source_t *source,
+					      bool centered);
 extern void obs_source_activate(obs_source_t *source, enum view_type type);
 extern void obs_source_deactivate(obs_source_t *source, enum view_type type);
 extern void obs_source_video_tick(obs_source_t *source, float seconds);
@@ -798,6 +885,10 @@ extern struct obs_source_frame *filter_async_video(obs_source_t *source,
 extern bool update_async_texture(struct obs_source *source,
 				 const struct obs_source_frame *frame,
 				 gs_texture_t *tex, gs_texrender_t *texrender);
+extern bool update_async_textures(struct obs_source *source,
+				  const struct obs_source_frame *frame,
+				  gs_texture_t *tex[MAX_AV_PLANES],
+				  gs_texrender_t *texrender);
 extern bool set_async_texture_size(struct obs_source *source,
 				   const struct obs_source_frame *frame);
 extern void remove_async_frame(obs_source_t *source,
@@ -839,6 +930,19 @@ struct caption_text {
 	struct caption_text *next;
 };
 
+struct pause_data {
+	pthread_mutex_t mutex;
+	uint64_t last_video_ts;
+	uint64_t ts_start;
+	uint64_t ts_end;
+	uint64_t ts_offset;
+};
+
+extern bool video_pause_check(struct pause_data *pause, uint64_t timestamp);
+extern bool audio_pause_check(struct pause_data *pause, struct audio_data *data,
+			      size_t sample_rate);
+extern void pause_reset(struct pause_data *pause);
+
 struct obs_output {
 	struct obs_context_data context;
 	struct obs_output_info info;
@@ -877,12 +981,23 @@ struct obs_output {
 	int total_frames;
 
 	volatile bool active;
+	volatile bool paused;
 	video_t *video;
 	audio_t *audio;
 	obs_encoder_t *video_encoder;
 	obs_encoder_t *audio_encoders[MAX_AUDIO_MIXES];
 	obs_service_t *service;
 	size_t mixer_mask;
+
+	struct pause_data pause;
+
+	struct circlebuf audio_buffer[MAX_AUDIO_MIXES][MAX_AV_PLANES];
+	uint64_t audio_start_ts;
+	uint64_t video_start_ts;
+	size_t audio_size;
+	size_t planes;
+	size_t sample_rate;
+	size_t total_audio_frames;
 
 	uint32_t scaled_width;
 	uint32_t scaled_height;
@@ -896,6 +1011,8 @@ struct obs_output {
 	double caption_timestamp;
 	struct caption_text *caption_head;
 	struct caption_text *caption_tail;
+
+	struct circlebuf caption_data;
 
 	bool valid;
 
@@ -911,6 +1028,8 @@ struct obs_output {
 	volatile bool delay_capturing;
 
 	char *last_error_message;
+
+	float audio_data[MAX_AUDIO_CHANNELS][AUDIO_OUTPUT_FRAMES];
 };
 
 static inline void do_output_signal(struct obs_output *output,
@@ -977,6 +1096,7 @@ struct obs_encoder {
 	enum video_format preferred_format;
 
 	volatile bool active;
+	volatile bool paused;
 	bool initialized;
 
 	/* indicates ownership of the info.id buffer */
@@ -1012,7 +1132,13 @@ struct obs_encoder {
 	pthread_mutex_t callbacks_mutex;
 	DARRAY(struct encoder_callback) callbacks;
 
+	struct pause_data pause;
+
 	const char *profile_encoder_encode_name;
+	char *last_error_message;
+
+	/* reconfigure encoder at next possible opportunity */
+	bool reconfigure_requested;
 };
 
 extern struct obs_encoder_info *find_encoder(const char *id);

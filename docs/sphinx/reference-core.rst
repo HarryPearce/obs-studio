@@ -228,6 +228,19 @@ Libobs Objects
 
 ---------------------
 
+.. function:: void obs_enum_scenes(bool (*enum_proc)(void*, obs_source_t*), void *param)
+
+   Enumerates all scenes.
+  
+   Callback function returns true to continue enumeration, or false to end
+   enumeration.
+  
+   Use :c:func:`obs_source_get_ref()` or
+   :c:func:`obs_source_get_weak_source()` if you want to retain a
+   reference after obs_enum_scenes finishes.
+ 
+---------------------
+
 .. function:: void obs_enum_outputs(bool (*enum_proc)(void*, obs_output_t*), void *param)
 
    Enumerates outputs.
@@ -246,6 +259,24 @@ Libobs Objects
   
    Increments the source reference counter, use
    :c:func:`obs_source_release()` to release it when complete.
+
+---------------------
+
+.. function:: obs_source_t *obs_get_transition_by_name(const char *name)
+
+   Gets a transition by its name.
+  
+   Increments the source reference counter, use
+   :c:func:`obs_source_release()` to release it when complete.
+
+---------------------
+
+.. function:: obs_scene_t *obs_get_scene_by_name(const char *name)
+
+   Gets a scene by its name.
+  
+   Increments the scene reference counter, use
+   :c:func:`obs_scene_release()` to release it when complete.
 
 ---------------------
 
@@ -403,6 +434,12 @@ Video, Audio, and Graphics
 
 ---------------------
 
+.. function:: bool obs_audio_monitoring_available(void)
+
+   :return: Whether audio monitoring is supported and available on the current platform
+
+---------------------
+
 .. function:: void obs_enum_audio_monitoring_devices(obs_enum_audio_device_cb cb, void *data)
 
    Enumerates audio devices which can be used for audio monitoring.
@@ -445,6 +482,18 @@ Video, Audio, and Graphics
    :param callback:   The callback that receives raw video frames.
    :param param:      The private data associated with the callback.
 
+---------------------
+
+.. function:: void obs_add_raw_audio_callback(size_t mix_idx, const struct audio_convert_info *conversion, audio_output_callback_t callback, void *param)
+              void obs_remove_raw_raw_callback(size_t track, audio_output_callback_t callback, void *param)
+
+   Adds/removes a raw audio callback.  Allows the ability to obtain raw
+   audio data without necessarily using an output.
+
+   :param mix_idx:    Specifies audio track to get data from.
+   :param conversion: Specifies conversion requirements.  Can be NULL.
+   :param callback:   The callback that receives raw audio data.
+   :param param:      The private data associated with the callback.
 
 Primary signal/procedure handlers
 ---------------------------------

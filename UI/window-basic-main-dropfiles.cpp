@@ -4,6 +4,7 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QMimeData>
+#include <QUrlQuery>
 #include <string>
 
 #include "window-basic-main.hpp"
@@ -49,19 +50,69 @@ static string GenerateSourceName(const char *base)
 			name += ")";
 		}
 
-		obs_source_t *source = obs_get_source_by_name(name.c_str());
+		OBSSourceAutoRelease source =
+			obs_get_source_by_name(name.c_str());
+
 		if (!source)
 			return name;
 	}
 }
 
+void OBSBasic::AddDropURL(const char *url, QString &name, obs_data_t *settings,
+			  const obs_video_info &ovi)
+{
+	QUrl path = QString::fromUtf8(url);
+	QUrlQuery query = QUrlQuery(path.query(QUrl::FullyEncoded));
+
+	int cx = (int)ovi.base_width;
+	int cy = (int)ovi.base_height;
+
+	if (query.hasQueryItem("layer-width"))
+		cx = query.queryItemValue("layer-width").toInt();
+	if (query.hasQueryItem("layer-height"))
+		cy = query.queryItemValue("layer-height").toInt();
+	if (query.hasQueryItem("layer-css")) {
+		// QUrl::FullyDecoded does NOT properly decode a
+		// application/x-www-form-urlencoded space represented as '+'
+		// Thus, this is manually filtered out before QUrl's
+		// decoding kicks in again. This is to allow JavaScript's
+		// default searchParams.append function to simply append css
+		// to the query parameters, which is the intended usecase for this.
+		QString fullyEncoded =
+			query.queryItemValue("layer-css", QUrl::FullyEncoded);
+		fullyEncoded = fullyEncoded.replace("+", "%20");
+		QString decoded = QUrl::fromPercentEncoding(
+			QByteArray::fromStdString(QT_TO_UTF8(fullyEncoded)));
+		obs_data_set_string(settings, "css", QT_TO_UTF8(decoded));
+	}
+
+	obs_data_set_int(settings, "width", cx);
+	obs_data_set_int(settings, "height", cy);
+
+	name = query.hasQueryItem("layer-name")
+		       ? query.queryItemValue("layer-name", QUrl::FullyDecoded)
+		       : path.host();
+
+	query.removeQueryItem("layer-width");
+	query.removeQueryItem("layer-height");
+	query.removeQueryItem("layer-name");
+	query.removeQueryItem("layer-css");
+	path.setQuery(query);
+
+	obs_data_set_string(settings, "url", QT_TO_UTF8(path.url()));
+}
+
 void OBSBasic::AddDropSource(const char *data, DropType image)
 {
 	OBSBasic *main = reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
-	obs_data_t *settings = obs_data_create();
-	obs_source_t *source = nullptr;
+	OBSDataAutoRelease settings = obs_data_create();
+	OBSSourceAutoRelease source = nullptr;
 	const char *type = nullptr;
+	std::vector<const char *> types;
 	QString name;
+
+	obs_video_info ovi;
+	obs_get_video_info(&ovi);
 
 	switch (image) {
 	case DropType_RawText:
@@ -97,13 +148,24 @@ void OBSBasic::AddDropSource(const char *data, DropType image)
 	case DropType_Html:
 		obs_data_set_bool(settings, "is_local_file", true);
 		obs_data_set_string(settings, "local_file", data);
+		obs_data_set_int(settings, "width", ovi.base_width);
+		obs_data_set_int(settings, "height", ovi.base_height);
 		name = QUrl::fromLocalFile(QString(data)).fileName();
-		type = "browser_source";
+		types = {"browser_source", "linuxbrowser-source"};
+		break;
+	case DropType_Url:
+		AddDropURL(data, name, settings, ovi);
+		types = {"browser_source", "linuxbrowser-source"};
 		break;
 	}
 
-	if (!obs_source_get_display_name(type)) {
-		obs_data_release(settings);
+	for (char const *t : types) {
+		if (obs_source_get_display_name(t)) {
+			type = t;
+			break;
+		}
+	}
+	if (type == nullptr || !obs_source_get_display_name(type)) {
 		return;
 	}
 
@@ -115,14 +177,17 @@ void OBSBasic::AddDropSource(const char *data, DropType image)
 	if (source) {
 		OBSScene scene = main->GetCurrentScene();
 		obs_scene_add(scene, source);
-		obs_source_release(source);
 	}
-
-	obs_data_release(settings);
 }
 
 void OBSBasic::dragEnterEvent(QDragEnterEvent *event)
 {
+	// refuse drops of our own widgets
+	if (event->source() != nullptr) {
+		event->setDropAction(Qt::IgnoreAction);
+		return;
+	}
+
 	event->acceptProposedAction();
 }
 
@@ -136,6 +201,35 @@ void OBSBasic::dragMoveEvent(QDragMoveEvent *event)
 	event->acceptProposedAction();
 }
 
+void OBSBasic::ConfirmDropUrl(const QString &url)
+{
+	if (url.left(7).compare("http://", Qt::CaseInsensitive) == 0 ||
+	    url.left(8).compare("https://", Qt::CaseInsensitive) == 0) {
+
+		activateWindow();
+
+		QString msg = QTStr("AddUrl.Text");
+		msg += "\n\n";
+		msg += QTStr("AddUrl.Text.Url").arg(url);
+
+		QMessageBox messageBox(this);
+		messageBox.setWindowTitle(QTStr("AddUrl.Title"));
+		messageBox.setText(msg);
+
+		QPushButton *yesButton = messageBox.addButton(
+			QTStr("Yes"), QMessageBox::YesRole);
+		QPushButton *noButton =
+			messageBox.addButton(QTStr("No"), QMessageBox::NoRole);
+		messageBox.setDefaultButton(yesButton);
+		messageBox.setEscapeButton(noButton);
+		messageBox.setIcon(QMessageBox::Question);
+		messageBox.exec();
+
+		if (messageBox.clickedButton() == yesButton)
+			AddDropSource(QT_TO_UTF8(url), DropType_Url);
+	}
+}
+
 void OBSBasic::dropEvent(QDropEvent *event)
 {
 	const QMimeData *mimeData = event->mimeData();
@@ -144,11 +238,14 @@ void OBSBasic::dropEvent(QDropEvent *event)
 		QList<QUrl> urls = mimeData->urls();
 
 		for (int i = 0; i < urls.size(); i++) {
-			QString file = urls.at(i).toLocalFile();
+			QUrl url = urls[i];
+			QString file = url.toLocalFile();
 			QFileInfo fileInfo(file);
 
-			if (!fileInfo.exists())
+			if (!fileInfo.exists()) {
+				ConfirmDropUrl(url.url());
 				continue;
+			}
 
 			QString suffixQStr = fileInfo.suffix();
 			QByteArray suffixArray = suffixQStr.toUtf8();
@@ -160,7 +257,7 @@ void OBSBasic::dropEvent(QDropEvent *event)
 #define CHECK_SUFFIX(extensions, type)                         \
 	cmp = extensions;                                      \
 	while (*cmp) {                                         \
-		if (strcmp(*cmp, suffix) == 0) {               \
+		if (astrcmpi(*cmp, suffix) == 0) {             \
 			AddDropSource(QT_TO_UTF8(file), type); \
 			found = true;                          \
 			break;                                 \

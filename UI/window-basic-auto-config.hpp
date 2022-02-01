@@ -33,11 +33,12 @@ class AutoConfig : public QWizard {
 		Invalid,
 		Streaming,
 		Recording,
+		VirtualCam,
 	};
 
 	enum class Service {
 		Twitch,
-		Smashcast,
+		YouTube,
 		Other,
 	};
 
@@ -139,6 +140,7 @@ public:
 public slots:
 	void on_prioritizeStreaming_clicked();
 	void on_prioritizeRecording_clicked();
+	void PrioritizeVCam();
 };
 
 class AutoConfigVideoPage : public QWizardPage {
@@ -173,7 +175,7 @@ class AutoConfigStreamPage : public QWizardPage {
 	bool ready = false;
 
 	void LoadServices(bool showAll);
-	inline bool IsCustom() const;
+	inline bool IsCustomService() const;
 
 public:
 	AutoConfigStreamPage(QWidget *parent = nullptr);
@@ -193,8 +195,11 @@ public slots:
 	void on_useStreamKey_clicked();
 	void ServiceChanged();
 	void UpdateKeyLink();
+	void UpdateMoreInfoLink();
 	void UpdateServerList();
 	void UpdateCompleted();
+
+	void reset_service_ui_fields(std::string &service);
 };
 
 class AutoConfigTestPage : public QWizardPage {

@@ -43,7 +43,8 @@ static const char *startup_script_template = "\
 for val in pairs(package.preload) do\n\
 	package.preload[val] = nil\n\
 end\n\
-package.cpath = package.cpath .. \";\" .. \"%s\" .. \"/?." SO_EXT "\"\n\
+package.cpath = package.cpath .. \";\" .. \"%s/Contents/MacOS/?.so\" .. \";\" .. \"%s\" .. \"/?." SO_EXT
+					     "\"\n\
 require \"obslua\"\n";
 
 static const char *get_script_path_func = "\
@@ -54,10 +55,10 @@ package.path = package.path .. \";\" .. script_path() .. \"/?.lua\"\n";
 
 static char *startup_script = NULL;
 
-static pthread_mutex_t tick_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t tick_mutex;
 static struct obs_lua_script *first_tick_script = NULL;
 
-pthread_mutex_t lua_source_def_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t lua_source_def_mutex;
 
 #define ls_get_libobs_obj(type, lua_index, obs_obj)                      \
 	ls_get_libobs_obj_(script, #type " *", lua_index, obs_obj, NULL, \
@@ -241,7 +242,7 @@ struct lua_obs_timer {
 	uint64_t interval;
 };
 
-static pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t timer_mutex;
 static struct lua_obs_timer *first_timer = NULL;
 
 static inline void lua_obs_timer_init(struct lua_obs_timer *timer)
@@ -455,7 +456,7 @@ static int obs_lua_signal_handler_disconnect(lua_State *script)
 		const char *cb_signal =
 			calldata_string(&cb->base.extra, "signal");
 
-		if (cb_signal && strcmp(signal, cb_signal) != 0 &&
+		if (cb_signal && strcmp(signal, cb_signal) == 0 &&
 		    handler == cb_handler)
 			break;
 
@@ -590,9 +591,11 @@ static int enum_sources(lua_State *script)
 
 /* -------------------------------------------- */
 
-static bool source_enum_filters_proc(obs_source_t *source, obs_source_t *filter,
+static void source_enum_filters_proc(obs_source_t *source, obs_source_t *filter,
 				     void *param)
 {
+	UNUSED_PARAMETER(source);
+
 	lua_State *script = param;
 
 	obs_source_get_ref(filter);
@@ -600,7 +603,6 @@ static bool source_enum_filters_proc(obs_source_t *source, obs_source_t *filter,
 
 	size_t idx = lua_rawlen(script, -2);
 	lua_rawseti(script, -2, (int)idx + 1);
-	return true;
 }
 
 static int source_enum_filters(lua_State *script)
@@ -1117,12 +1119,9 @@ obs_script_t *obs_lua_script_create(const char *path, obs_data_t *settings)
 	data->base.type = OBS_SCRIPT_LANG_LUA;
 	data->tick = LUA_REFNIL;
 
-	pthread_mutexattr_t attr;
-	pthread_mutexattr_init(&attr);
 	pthread_mutex_init_value(&data->mutex);
-	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
 
-	if (pthread_mutex_init(&data->mutex, &attr) != 0) {
+	if (pthread_mutex_init_recursive(&data->mutex) != 0) {
 		bfree(data);
 		return NULL;
 	}
@@ -1298,18 +1297,38 @@ void obs_lua_load(void)
 	struct dstr dep_paths = {0};
 	struct dstr tmp = {0};
 
-	pthread_mutexattr_t attr;
-	pthread_mutexattr_init(&attr);
-	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-
 	pthread_mutex_init(&tick_mutex, NULL);
-	pthread_mutex_init(&timer_mutex, &attr);
+	pthread_mutex_init_recursive(&timer_mutex);
 	pthread_mutex_init(&lua_source_def_mutex, NULL);
 
 	/* ---------------------------------------------- */
 	/* Initialize Lua startup script                  */
 
-	dstr_printf(&tmp, startup_script_template, SCRIPT_DIR);
+	char *bundlePath = "./";
+
+#ifdef __APPLE__
+	Class nsRunningApplication = objc_lookUpClass("NSRunningApplication");
+	SEL currentAppSel = sel_getUid("currentApplication");
+
+	typedef id (*running_app_func)(Class, SEL);
+	running_app_func operatingSystemName = (running_app_func)objc_msgSend;
+	id app = operatingSystemName(nsRunningApplication, currentAppSel);
+
+	typedef id (*bundle_url_func)(id, SEL);
+	bundle_url_func bundleURL = (bundle_url_func)objc_msgSend;
+	id url = bundleURL(app, sel_getUid("bundleURL"));
+
+	typedef id (*url_path_func)(id, SEL);
+	url_path_func urlPath = (url_path_func)objc_msgSend;
+
+	id path = urlPath(url, sel_getUid("path"));
+
+	typedef id (*string_func)(id, SEL);
+	string_func utf8String = (string_func)objc_msgSend;
+	bundlePath = (char *)utf8String(path, sel_registerName("UTF8String"));
+#endif
+
+	dstr_printf(&tmp, startup_script_template, bundlePath, SCRIPT_DIR);
 	startup_script = tmp.array;
 
 	dstr_free(&dep_paths);

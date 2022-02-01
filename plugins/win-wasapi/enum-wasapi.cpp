@@ -36,7 +36,7 @@ string GetDeviceName(IMMDevice *device)
 	return device_name;
 }
 
-void GetWASAPIAudioDevices_(vector<AudioDeviceInfo> &devices, bool input)
+static void GetWASAPIAudioDevices_(vector<AudioDeviceInfo> &devices, bool input)
 {
 	ComPtr<IMMDeviceEnumerator> enumerator;
 	ComPtr<IMMDeviceCollection> collection;
@@ -91,7 +91,7 @@ void GetWASAPIAudioDevices(vector<AudioDeviceInfo> &devices, bool input)
 	try {
 		GetWASAPIAudioDevices_(devices, input);
 
-	} catch (HRError error) {
+	} catch (HRError &error) {
 		blog(LOG_WARNING, "[GetWASAPIAudioDevices] %s: %lX", error.str,
 		     error.hr);
 	}

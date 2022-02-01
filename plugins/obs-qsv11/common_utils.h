@@ -1,13 +1,3 @@
-/*****************************************************************************
-
-INTEL CORPORATION PROPRIETARY INFORMATION
-This software is supplied under the terms of a license agreement or
-nondisclosure agreement with Intel Corporation and may not be copied
-or disclosed except in accordance with the terms of that agreement.
-Copyright(c) 2005-2014 Intel Corporation. All Rights Reserved.
-
-*****************************************************************************/
-
 #pragma once
 
 #include <stdio.h>
@@ -95,6 +85,8 @@ mfxStatus simple_lock(mfxHDL pthis, mfxMemId mid, mfxFrameData *ptr);
 mfxStatus simple_unlock(mfxHDL pthis, mfxMemId mid, mfxFrameData *ptr);
 mfxStatus simple_gethdl(mfxHDL pthis, mfxMemId mid, mfxHDL *handle);
 mfxStatus simple_free(mfxHDL pthis, mfxFrameAllocResponse *response);
+mfxStatus simple_copytex(mfxHDL pthis, mfxMemId mid, mfxU32 tex_handle,
+			 mfxU64 lock_key, mfxU64 *next_key);
 
 // =================================================================
 // Utility functions, not directly tied to Media SDK functionality

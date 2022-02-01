@@ -53,8 +53,9 @@ static wchar_t home_path[1024] = {0};
 
 DARRAY(char *) python_paths;
 static bool python_loaded = false;
+static bool mutexes_loaded = false;
 
-static pthread_mutex_t tick_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t tick_mutex;
 static struct obs_python_script *first_tick_script = NULL;
 
 static PyObject *py_obspython = NULL;
@@ -147,8 +148,13 @@ void add_functions_to_py_module(PyObject *module, PyMethodDef *method_list)
 
 static PyObject *py_get_current_script_path(PyObject *self, PyObject *args)
 {
+	PyObject *dir;
+
 	UNUSED_PARAMETER(args);
-	return PyDict_GetItemString(PyModule_GetDict(self), "__script_dir__");
+
+	dir = PyDict_GetItemString(PyModule_GetDict(self), "__script_dir__");
+	Py_XINCREF(dir);
+	return dir;
 }
 
 static void get_defaults(struct obs_python_script *data, PyObject *get_defs)
@@ -373,7 +379,7 @@ struct python_obs_timer {
 	uint64_t interval;
 };
 
-static pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t timer_mutex;
 static struct python_obs_timer *first_timer = NULL;
 
 static inline void python_obs_timer_init(struct python_obs_timer *timer)
@@ -595,7 +601,7 @@ static PyObject *obs_python_signal_handler_disconnect(PyObject *self,
 		const char *cb_signal =
 			calldata_string(&cb->base.extra, "signal");
 
-		if (cb_signal && strcmp(signal, cb_signal) != 0 &&
+		if (cb_signal && strcmp(signal, cb_signal) == 0 &&
 		    handler == cb_handler)
 			break;
 
@@ -1565,12 +1571,10 @@ void obs_python_load(void)
 {
 	da_init(python_paths);
 
-	pthread_mutexattr_t attr;
-	pthread_mutexattr_init(&attr);
-	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-
 	pthread_mutex_init(&tick_mutex, NULL);
-	pthread_mutex_init(&timer_mutex, &attr);
+	pthread_mutex_init_recursive(&timer_mutex);
+
+	mutexes_loaded = true;
 }
 
 extern void add_python_frontend_funcs(PyObject *module);
@@ -1649,7 +1653,16 @@ bool obs_scripting_load_python(const char *python_path)
 	/* ---------------------------------------------- */
 	/* Load main interface module                     */
 
-	add_to_python_path(SCRIPT_DIR);
+	char *absolute_script_path = os_get_abs_path_ptr(SCRIPT_DIR);
+	add_to_python_path(absolute_script_path);
+	bfree(absolute_script_path);
+
+#if __APPLE__
+	char *exec_path = os_get_executable_path_ptr("");
+	if (exec_path)
+		add_to_python_path(exec_path);
+	bfree(exec_path);
+#endif
 
 	py_obspython = PyImport_ImportModule("obspython");
 	bool success = !py_error();
@@ -1688,6 +1701,11 @@ out:
 
 void obs_python_unload(void)
 {
+	if (mutexes_loaded) {
+		pthread_mutex_destroy(&tick_mutex);
+		pthread_mutex_destroy(&timer_mutex);
+	}
+
 	if (!python_loaded_at_all)
 		return;
 
@@ -1706,8 +1724,6 @@ void obs_python_unload(void)
 		bfree(python_paths.array[i]);
 	da_free(python_paths);
 
-	pthread_mutex_destroy(&tick_mutex);
-	pthread_mutex_destroy(&timer_mutex);
 	dstr_free(&cur_py_log_chunk);
 
 	python_loaded_at_all = false;

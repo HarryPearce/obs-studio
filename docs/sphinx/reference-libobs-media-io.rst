@@ -39,9 +39,10 @@ Video Handler
 
    YUV color space.  Can be one of the following values:
 
-   - VIDEO_CS_DEFAULT - Equivalent to VIDEO_CS_601
+   - VIDEO_CS_DEFAULT - Equivalent to VIDEO_CS_709
    - VIDEO_CS_601     - 601 color space
    - VIDEO_CS_709     - 709 color space
+   - VIDEO_CS_SRGB    - sRGB color space
 
 ---------------------
 
@@ -219,7 +220,7 @@ Audio Handler
    - SPEAKERS_MONO
    - SPEAKERS_STEREO
    - SPEAKERS_2POINT1
-   - SPEAKERS_QUAD
+   - SPEAKERS_4POINT0
    - SPEAKERS_4POINT1
    - SPEAKERS_5POINT1
    - SPEAKERS_5POINT1_SURROUND

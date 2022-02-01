@@ -80,15 +80,15 @@ static void decklink_update(void *data, obs_data_t *settings)
 	decklink->SetChannelFormat(channelFormat);
 	decklink->hash = std::string(hash);
 	decklink->swap = obs_data_get_bool(settings, SWAP);
+	decklink->allow10Bit = obs_data_get_bool(settings, ALLOW_10_BIT);
 	decklink->Activate(device, id, videoConnection, audioConnection);
 }
 
 static void decklink_show(void *data)
 {
 	DeckLinkInput *decklink = (DeckLinkInput *)data;
-	obs_source_t *source = decklink->GetSource();
-	bool showing = obs_source_showing(source);
-	if (decklink->dwns && showing && !decklink->Capturing()) {
+
+	if (decklink->dwns && !decklink->Capturing()) {
 		ComPtr<DeckLinkDevice> device;
 		device.Set(deviceEnum->FindByHash(decklink->hash.c_str()));
 		decklink->Activate(device, decklink->id,
@@ -99,9 +99,8 @@ static void decklink_show(void *data)
 static void decklink_hide(void *data)
 {
 	DeckLinkInput *decklink = (DeckLinkInput *)data;
-	obs_source_t *source = decklink->GetSource();
-	bool showing = obs_source_showing(source);
-	if (decklink->dwns && showing)
+
+	if (decklink->dwns && decklink->Capturing())
 		decklink->Deactivate();
 }
 
@@ -247,6 +246,9 @@ static bool mode_id_changed(obs_properties_t *props, obs_property_t *list,
 	list = obs_properties_get(props, PIXEL_FORMAT);
 	obs_property_set_visible(list, id != MODE_ID_AUTO);
 
+	auto allow10BitProp = obs_properties_get(props, ALLOW_10_BIT);
+	obs_property_set_visible(allow10BitProp, id == MODE_ID_AUTO);
+
 	return true;
 }
 
@@ -277,6 +279,7 @@ static obs_properties_t *decklink_get_properties(void *data)
 				       OBS_COMBO_FORMAT_INT);
 
 	obs_property_list_add_int(list, "8-bit YUV", bmdFormat8BitYUV);
+	obs_property_list_add_int(list, "10-bit YUV", bmdFormat10BitYUV);
 	obs_property_list_add_int(list, "8-bit BGRA", bmdFormat8BitBGRA);
 
 	list = obs_properties_add_list(props, COLOR_SPACE, TEXT_COLOR_SPACE,
@@ -322,6 +325,8 @@ static obs_properties_t *decklink_get_properties(void *data)
 
 	obs_properties_add_bool(props, DEACTIVATE_WNS, TEXT_DWNS);
 
+	obs_properties_add_bool(props, ALLOW_10_BIT, TEXT_ALLOW_10_BIT);
+
 	UNUSED_PARAMETER(data);
 	return props;
 }
@@ -331,9 +336,9 @@ struct obs_source_info create_decklink_source_info()
 	struct obs_source_info decklink_source_info = {};
 	decklink_source_info.id = "decklink-input";
 	decklink_source_info.type = OBS_SOURCE_TYPE_INPUT;
-	decklink_source_info.output_flags = OBS_SOURCE_ASYNC_VIDEO |
-					    OBS_SOURCE_AUDIO |
-					    OBS_SOURCE_DO_NOT_DUPLICATE;
+	decklink_source_info.output_flags =
+		OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO |
+		OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CEA_708;
 	decklink_source_info.create = decklink_create;
 	decklink_source_info.destroy = decklink_destroy;
 	decklink_source_info.get_defaults = decklink_get_defaults;
@@ -342,6 +347,7 @@ struct obs_source_info create_decklink_source_info()
 	decklink_source_info.update = decklink_update;
 	decklink_source_info.show = decklink_show;
 	decklink_source_info.hide = decklink_hide;
+	decklink_source_info.icon_type = OBS_ICON_TYPE_CAMERA;
 
 	return decklink_source_info;
 }

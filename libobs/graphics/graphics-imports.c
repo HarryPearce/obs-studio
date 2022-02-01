@@ -50,6 +50,7 @@ bool load_graphics_imports(struct gs_exports *exports, void *module,
 	GRAPHICS_IMPORT(device_destroy);
 	GRAPHICS_IMPORT(device_enter_context);
 	GRAPHICS_IMPORT(device_leave_context);
+	GRAPHICS_IMPORT(device_get_device_obj);
 	GRAPHICS_IMPORT(device_swapchain_create);
 	GRAPHICS_IMPORT(device_resize);
 	GRAPHICS_IMPORT(device_get_size);
@@ -65,6 +66,8 @@ bool load_graphics_imports(struct gs_exports *exports, void *module,
 	GRAPHICS_IMPORT(device_pixelshader_create);
 	GRAPHICS_IMPORT(device_vertexbuffer_create);
 	GRAPHICS_IMPORT(device_indexbuffer_create);
+	GRAPHICS_IMPORT(device_timer_create);
+	GRAPHICS_IMPORT(device_timer_range_create);
 	GRAPHICS_IMPORT(device_get_texture_type);
 	GRAPHICS_IMPORT(device_load_vertexbuffer);
 	GRAPHICS_IMPORT(device_load_indexbuffer);
@@ -79,9 +82,12 @@ bool load_graphics_imports(struct gs_exports *exports, void *module,
 	GRAPHICS_IMPORT(device_get_zstencil_target);
 	GRAPHICS_IMPORT(device_set_render_target);
 	GRAPHICS_IMPORT(device_set_cube_render_target);
+	GRAPHICS_IMPORT(device_enable_framebuffer_srgb);
+	GRAPHICS_IMPORT(device_framebuffer_srgb_enabled);
 	GRAPHICS_IMPORT(device_copy_texture_region);
 	GRAPHICS_IMPORT(device_copy_texture);
 	GRAPHICS_IMPORT(device_stage_texture);
+	GRAPHICS_IMPORT(device_begin_frame);
 	GRAPHICS_IMPORT(device_begin_scene);
 	GRAPHICS_IMPORT(device_draw);
 	GRAPHICS_IMPORT(device_load_swapchain);
@@ -98,6 +104,7 @@ bool load_graphics_imports(struct gs_exports *exports, void *module,
 	GRAPHICS_IMPORT(device_enable_color);
 	GRAPHICS_IMPORT(device_blend_function);
 	GRAPHICS_IMPORT(device_blend_function_separate);
+	GRAPHICS_IMPORT(device_blend_op);
 	GRAPHICS_IMPORT(device_depth_function);
 	GRAPHICS_IMPORT(device_stencil_function);
 	GRAPHICS_IMPORT(device_stencil_op);
@@ -153,6 +160,15 @@ bool load_graphics_imports(struct gs_exports *exports, void *module,
 	GRAPHICS_IMPORT(gs_indexbuffer_get_num_indices);
 	GRAPHICS_IMPORT(gs_indexbuffer_get_type);
 
+	GRAPHICS_IMPORT(gs_timer_destroy);
+	GRAPHICS_IMPORT(gs_timer_begin);
+	GRAPHICS_IMPORT(gs_timer_end);
+	GRAPHICS_IMPORT(gs_timer_get_data);
+	GRAPHICS_IMPORT(gs_timer_range_destroy);
+	GRAPHICS_IMPORT(gs_timer_range_begin);
+	GRAPHICS_IMPORT(gs_timer_range_end);
+	GRAPHICS_IMPORT(gs_timer_range_get_data);
+
 	GRAPHICS_IMPORT(gs_shader_destroy);
 	GRAPHICS_IMPORT(gs_shader_get_num_params);
 	GRAPHICS_IMPORT(gs_shader_get_param_by_idx);
@@ -180,6 +196,8 @@ bool load_graphics_imports(struct gs_exports *exports, void *module,
 
 	/* OSX/Cocoa specific functions */
 #ifdef __APPLE__
+	GRAPHICS_IMPORT(device_shared_texture_available);
+	GRAPHICS_IMPORT_OPTIONAL(device_texture_open_shared);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_create_from_iosurface);
 	GRAPHICS_IMPORT_OPTIONAL(gs_texture_rebind_iosurface);
 
@@ -188,19 +206,29 @@ bool load_graphics_imports(struct gs_exports *exports, void *module,
 	GRAPHICS_IMPORT(device_gdi_texture_available);
 	GRAPHICS_IMPORT(device_shared_texture_available);
 	GRAPHICS_IMPORT_OPTIONAL(device_get_duplicator_monitor_info);
+	GRAPHICS_IMPORT_OPTIONAL(device_duplicator_get_monitor_index);
 	GRAPHICS_IMPORT_OPTIONAL(device_duplicator_create);
 	GRAPHICS_IMPORT_OPTIONAL(gs_duplicator_destroy);
 	GRAPHICS_IMPORT_OPTIONAL(gs_duplicator_update_frame);
 	GRAPHICS_IMPORT_OPTIONAL(gs_duplicator_get_texture);
+	GRAPHICS_IMPORT_OPTIONAL(gs_get_adapter_count);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_create_gdi);
 	GRAPHICS_IMPORT_OPTIONAL(gs_texture_get_dc);
 	GRAPHICS_IMPORT_OPTIONAL(gs_texture_release_dc);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_open_shared);
+	GRAPHICS_IMPORT_OPTIONAL(device_texture_open_nt_shared);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_get_shared_handle);
+	GRAPHICS_IMPORT_OPTIONAL(device_texture_wrap_obj);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_acquire_sync);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_release_sync);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_create_nv12);
 	GRAPHICS_IMPORT_OPTIONAL(device_stagesurface_create_nv12);
+	GRAPHICS_IMPORT_OPTIONAL(device_register_loss_callbacks);
+	GRAPHICS_IMPORT_OPTIONAL(device_unregister_loss_callbacks);
+#elif __linux__
+	GRAPHICS_IMPORT(device_texture_create_from_dmabuf);
+	GRAPHICS_IMPORT(device_query_dmabuf_capabilities);
+	GRAPHICS_IMPORT(device_query_dmabuf_modifiers_for_format);
 #endif
 
 	return success;

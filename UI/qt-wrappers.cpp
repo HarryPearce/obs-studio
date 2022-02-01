@@ -22,11 +22,19 @@
 #include <util/threading.h>
 #include <QWidget>
 #include <QLayout>
+#include <QComboBox>
 #include <QMessageBox>
 #include <QDataStream>
+#include <QKeyEvent>
+#include <QFileDialog>
+#include <QStandardItemModel>
 
 #if !defined(_WIN32) && !defined(__APPLE__)
-#include <QX11Info>
+#include <obs-nix-platform.h>
+#endif
+
+#ifdef ENABLE_WAYLAND
+#include <qpa/qplatformnativeinterface.h>
 #endif
 
 static inline void OBSErrorBoxva(QWidget *parent, const char *msg, va_list args)
@@ -67,7 +75,6 @@ OBSMessageBox::question(QWidget *parent, const QString &title,
 	translate_button(Reset);
 	translate_button(Yes);
 	translate_button(No);
-	translate_button(No);
 	translate_button(Abort);
 	translate_button(Retry);
 	translate_button(Ignore);
@@ -104,16 +111,33 @@ void OBSMessageBox::critical(QWidget *parent, const QString &title,
 	mb.exec();
 }
 
-void QTToGSWindow(WId windowId, gs_window &gswindow)
+bool QTToGSWindow(QWindow *window, gs_window &gswindow)
 {
+	bool success = true;
+
 #ifdef _WIN32
-	gswindow.hwnd = (HWND)windowId;
+	gswindow.hwnd = (HWND)window->winId();
 #elif __APPLE__
-	gswindow.view = (id)windowId;
+	gswindow.view = (id)window->winId();
 #else
-	gswindow.id = windowId;
-	gswindow.display = QX11Info::display();
+	switch (obs_get_nix_platform()) {
+	case OBS_NIX_PLATFORM_X11_GLX:
+	case OBS_NIX_PLATFORM_X11_EGL:
+		gswindow.id = window->winId();
+		gswindow.display = obs_get_nix_platform_display();
+		break;
+#ifdef ENABLE_WAYLAND
+	case OBS_NIX_PLATFORM_WAYLAND:
+		QPlatformNativeInterface *native =
+			QGuiApplication::platformNativeInterface();
+		gswindow.display =
+			native->nativeResourceForWindow("surface", window);
+		success = gswindow.display != nullptr;
+		break;
 #endif
+	}
+#endif
+	return success;
 }
 
 uint32_t TranslateQtKeyboardEventModifiers(Qt::KeyboardModifiers mods)
@@ -165,7 +189,8 @@ QDataStream &operator>>(QDataStream &in, OBSScene &scene)
 
 	in >> sceneName;
 
-	obs_source_t *source = obs_get_source_by_name(QT_TO_UTF8(sceneName));
+	OBSSourceAutoRelease source =
+		obs_get_source_by_name(QT_TO_UTF8(sceneName));
 	scene = obs_scene_from_source(source);
 
 	return in;
@@ -186,13 +211,11 @@ QDataStream &operator>>(QDataStream &in, OBSSceneItem &si)
 
 	in >> sceneName >> sourceName;
 
-	obs_source_t *sceneSource =
+	OBSSourceAutoRelease sceneSource =
 		obs_get_source_by_name(QT_TO_UTF8(sceneName));
 
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
 	si = obs_scene_find_source(scene, QT_TO_UTF8(sourceName));
-
-	obs_source_release(sceneSource);
 
 	return in;
 }
@@ -263,7 +286,7 @@ void ExecuteFuncSafeBlockMsgBox(std::function<void()> func,
 	dlg.setWindowFlags(dlg.windowFlags() & ~Qt::WindowCloseButtonHint);
 	dlg.setWindowTitle(title);
 	dlg.setText(text);
-	dlg.setStandardButtons(0);
+	dlg.setStandardButtons(QMessageBox::StandardButtons());
 
 	auto wait = [&]() {
 		func();
@@ -292,4 +315,90 @@ void ExecThreadedWithoutBlocking(std::function<void()> func,
 		ExecuteFuncSafeBlock(func);
 	else
 		ExecuteFuncSafeBlockMsgBox(func, title, text);
+}
+
+bool LineEditCanceled(QEvent *event)
+{
+	if (event->type() == QEvent::KeyPress) {
+		QKeyEvent *keyEvent = reinterpret_cast<QKeyEvent *>(event);
+		return keyEvent->key() == Qt::Key_Escape;
+	}
+
+	return false;
+}
+
+bool LineEditChanged(QEvent *event)
+{
+	if (event->type() == QEvent::KeyPress) {
+		QKeyEvent *keyEvent = reinterpret_cast<QKeyEvent *>(event);
+
+		switch (keyEvent->key()) {
+		case Qt::Key_Tab:
+		case Qt::Key_Backtab:
+		case Qt::Key_Enter:
+		case Qt::Key_Return:
+			return true;
+		}
+	} else if (event->type() == QEvent::FocusOut) {
+		return true;
+	}
+
+	return false;
+}
+
+void SetComboItemEnabled(QComboBox *c, int idx, bool enabled)
+{
+	QStandardItemModel *model =
+		dynamic_cast<QStandardItemModel *>(c->model());
+	QStandardItem *item = model->item(idx);
+	item->setFlags(enabled ? Qt::ItemIsSelectable | Qt::ItemIsEnabled
+			       : Qt::NoItemFlags);
+}
+
+void setThemeID(QWidget *widget, const QString &themeID)
+{
+	if (widget->property("themeID").toString() != themeID) {
+		widget->setProperty("themeID", themeID);
+
+		/* force style sheet recalculation */
+		QString qss = widget->styleSheet();
+		widget->setStyleSheet("/* */");
+		widget->setStyleSheet(qss);
+	}
+}
+
+QString SelectDirectory(QWidget *parent, QString title, QString path)
+{
+	QString dir = QFileDialog::getExistingDirectory(
+		parent, title, path,
+		QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+	return dir;
+}
+
+QString SaveFile(QWidget *parent, QString title, QString path,
+		 QString extensions)
+{
+	QString file =
+		QFileDialog::getSaveFileName(parent, title, path, extensions);
+
+	return file;
+}
+
+QString OpenFile(QWidget *parent, QString title, QString path,
+		 QString extensions)
+{
+	QString file =
+		QFileDialog::getOpenFileName(parent, title, path, extensions);
+
+	return file;
+}
+
+QStringList OpenFiles(QWidget *parent, QString title, QString path,
+		      QString extensions)
+{
+	QStringList files =
+		QFileDialog::getOpenFileNames(parent, title, path, extensions);
+
+	return files;
 }

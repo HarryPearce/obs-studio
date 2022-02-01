@@ -18,7 +18,6 @@
 #pragma once
 
 #include "obs.h"
-#include "obs-internal.h"
 #include "graphics/matrix4.h"
 
 /* how obs scene! */
@@ -64,6 +63,8 @@ struct obs_scene_item {
 	struct vec2 output_scale;
 	enum obs_scale_type scale_filter;
 
+	enum obs_blending_type blend_type;
+
 	struct matrix4 box_transform;
 	struct vec2 box_scale;
 	struct matrix4 draw_transform;
@@ -78,6 +79,11 @@ struct obs_scene_item {
 
 	pthread_mutex_t actions_mutex;
 	DARRAY(struct item_action) audio_actions;
+
+	struct obs_source *show_transition;
+	struct obs_source *hide_transition;
+	uint32_t show_transition_duration;
+	uint32_t hide_transition_duration;
 
 	/* would do **prev_next, but not really great for reordering */
 	struct obs_scene_item *prev;

@@ -11,17 +11,27 @@ if (NOT "${FFMPEG_AVCODEC_LIBRARIES}" STREQUAL "")
 	list(REMOVE_ITEM FFMPEG_LIBRARIES ${FFMPEG_AVCODEC_LIBRARIES})
 endif()
 
+add_definitions(-DIS_LIBOBS=1)
+
+if(DEBUG_FFMPEG_MUX)
+	add_definitions(-DSHOW_SUBPROCESSES)
+endif()
+
 if(UNIX)
 	if (NOT APPLE)
+		find_package(X11 REQUIRED)
 		find_package(X11_XCB REQUIRED)
 		find_package(XCB OPTIONAL_COMPONENTS XINPUT)
+		find_package(XCB)
+		find_library(M_LIBRARY NAMES m)
+		find_library(DL_LIBRARY NAMES dl)
 		if (XCB_XINPUT_FOUND)
 			set(USE_XINPUT "1")
 		else()
 			set(USE_XINPUT "0")
 		endif()
-		find_package(PulseAudio)
-		if (NOT "${PULSEAUDIO_LIBRARY}" STREQUAL "")
+		if (NOT DISABLE_PULSEAUDIO)
+			find_package(PulseAudio REQUIRED)
 			message(STATUS "Found PulseAudio - Audio Monitor enabled")
 			set(HAVE_PULSEAUDIO "1")
 		else()
@@ -31,7 +41,7 @@ if(UNIX)
 		set(HAVE_PULSEAUDIO "0")
 		set(USE_XINPUT "0")
 	endif()
-	find_package(DBus QUIET)
+	find_package(Gio QUIET)
 else()
 	set(HAVE_DBUS "0")
 	set(HAVE_PULSEAUDIO "0")
@@ -74,19 +84,29 @@ endif()
 
 find_package(ZLIB REQUIRED)
 
-include_directories(SYSTEM ${ZLIB_INCLUDE_DIR})
+include_directories(SYSTEM ${ZLIB_INCLUDE_DIRS})
 
 add_definitions(-DLIBOBS_EXPORTS)
 
 include_directories(${OBS_JANSSON_INCLUDE_DIRS})
 
 if(WIN32)
+	set(MODULE_DESCRIPTION "OBS Library")
+	file(STRINGS obs-config.h _version_parse REGEX "^.*(MAJOR|MINOR|PATCH)_VER[ \t]+[0-9]+[ \t]*$")
+
+	string(REGEX REPLACE ".*MAJOR_VER[ \t]+([0-9]+).*" "\\1" UI_VERSION_MAJOR "${_version_parse}")
+	string(REGEX REPLACE ".*MINOR_VER[ \t]+([0-9]+).*" "\\1" UI_VERSION_MINOR "${_version_parse}")
+	string(REGEX REPLACE ".*PATCH_VER[ \t]+([0-9]+).*" "\\1" UI_VERSION_PATCH "${_version_parse}")
+	set(UI_VERSION "${UI_VERSION_MAJOR}.${UI_VERSION_MINOR}.${UI_VERSION_PATCH}")
+
+	configure_file(${CMAKE_SOURCE_DIR}/cmake/winrc/obs-module.rc.in libobs.rc)
 	set(libobs_PLATFORM_SOURCES
 		obs-win-crash-handler.c
 		obs-windows.c
 		util/threading-windows.c
 		util/pipe-windows.c
-		util/platform-windows.c)
+		util/platform-windows.c
+		libobs.rc)
 	set(libobs_PLATFORM_HEADERS
 		util/threading-windows.h
 		util/windows/win-registry.h
@@ -96,13 +116,14 @@ if(WIN32)
 		util/windows/HRError.hpp
 		util/windows/WinHandle.hpp)
 	set(libobs_audio_monitoring_SOURCES
-		audio-monitoring/win32/wasapi-output.c
 		audio-monitoring/win32/wasapi-enum-devices.c
+		audio-monitoring/win32/wasapi-monitoring-available.c
+		audio-monitoring/win32/wasapi-output.c
 		)
 	set(libobs_audio_monitoring_HEADERS
 		audio-monitoring/win32/wasapi-output.h
 		)
-	set(libobs_PLATFORM_DEPS winmm psapi)
+	set(libobs_PLATFORM_DEPS Avrt winmm)
 	if(MSVC)
 		set(libobs_PLATFORM_DEPS
 		${libobs_PLATFORM_DEPS}
@@ -110,7 +131,7 @@ if(WIN32)
 	endif()
 elseif(APPLE)
 	set(libobs_PLATFORM_SOURCES
-		obs-cocoa.c
+		obs-cocoa.m
 		util/threading-posix.c
 		util/pipe-posix.c
 		util/platform-nix.c
@@ -120,6 +141,7 @@ elseif(APPLE)
 		util/apple/cfstring-utils.h)
 	set(libobs_audio_monitoring_SOURCES
 		audio-monitoring/osx/coreaudio-enum-devices.c
+		audio-monitoring/osx/coreaudio-monitoring-available.c
 		audio-monitoring/osx/coreaudio-output.c
 		)
 	set(libobs_audio_monitoring_HEADERS
@@ -128,7 +150,6 @@ elseif(APPLE)
 
 	set_source_files_properties(${libobs_PLATFORM_SOURCES}
 		PROPERTIES
-			LANGUAGE C
 			COMPILE_FLAGS "-fobjc-arc")
 
 	find_library(COCOA Cocoa)
@@ -170,12 +191,33 @@ elseif(APPLE)
 elseif(UNIX)
 	set(libobs_PLATFORM_SOURCES
 		obs-nix.c
+		obs-nix-platform.c
+		obs-nix-x11.c
 		util/threading-posix.c
 		util/pipe-posix.c
 		util/platform-nix.c)
 
 	set(libobs_PLATFORM_HEADERS
-		util/threading-posix.h)
+		util/threading-posix.h
+		obs-nix-platform.h)
+
+	if(ENABLE_WAYLAND)
+		find_package(Wayland COMPONENTS Client REQUIRED)
+		find_package(Xkbcommon REQUIRED)
+
+		set(libobs_PLATFORM_SOURCES ${libobs_PLATFORM_SOURCES}
+			obs-nix-wayland.c)
+
+		include_directories(
+			${WAYLAND_CLIENT_INCLUDE_DIR}
+			${XKBCOMMON_INCLUDE_DIR})
+		add_definitions(
+			${WAYLAND_DEFINITIONS})
+		set(libobs_PLATFORM_DEPS
+			${libobs_PLATFORM_DEPS}
+			${WAYLAND_CLIENT_LIBRARIES}
+			${XKBCOMMON_LIBRARIES})
+	endif()
 
 	if(HAVE_PULSEAUDIO)
 		set(libobs_audio_monitoring_HEADERS
@@ -184,26 +226,35 @@ elseif(UNIX)
 		set(libobs_audio_monitoring_SOURCES
 			audio-monitoring/pulse/pulseaudio-wrapper.c
 			audio-monitoring/pulse/pulseaudio-enum-devices.c
+			audio-monitoring/pulse/pulseaudio-monitoring-available.c
 			audio-monitoring/pulse/pulseaudio-output.c)
 	else()
 		set(libobs_audio_monitoring_SOURCES
 			audio-monitoring/null/null-audio-monitoring.c)
 	endif()
-	if(DBUS_FOUND)
+	if(GIO_FOUND)
 		set(libobs_PLATFORM_SOURCES ${libobs_PLATFORM_SOURCES}
-			util/platform-nix-dbus.c)
-		include_directories(${DBUS_INCLUDE_DIRS})
+			util/platform-nix-dbus.c
+			util/platform-nix-portal.c)
+		include_directories(${GIO_INCLUDE_DIRS})
+		add_definitions(
+			${GIO_DEFINITIONS})
 		set(libobs_PLATFORM_DEPS
 			${libobs_PLATFORM_DEPS}
-			${DBUS_LIBRARIES})
+			${GIO_LIBRARIES})
 	endif()
 
 	include_directories(
+		${X11_X11_INCLUDE_PATH}
 		${X11_XCB_INCLUDE_DIRS})
 	add_definitions(
 		${X11_XCB_DEFINITIONS})
 	set(libobs_PLATFORM_DEPS
 		${libobs_PLATFORM_DEPS}
+		${DL_LIBRARY}
+		${M_LIBRARY}
+		${X11_X11_LIB}
+		${XCB_LIBRARIES}
 		${X11_XCB_LIBRARIES})
 
 	if(USE_XINPUT)
@@ -278,6 +329,7 @@ set(libobs_graphics_SOURCES
 	graphics/math-extra.c
 	graphics/graphics-imports.c)
 set(libobs_graphics_HEADERS
+	graphics/half.h
 	graphics/plane.h
 	graphics/quat.h
 	graphics/input.h
@@ -291,6 +343,7 @@ set(libobs_graphics_HEADERS
 	graphics/libnsgif/libnsgif.h
 	graphics/device-exports.h
 	graphics/image-file.h
+	graphics/srgb.h
 	graphics/vec2.h
 	graphics/vec4.h
 	graphics/matrix3.h
@@ -330,24 +383,26 @@ set(libobs_util_SOURCES
 	util/bmem.c
 	util/config-file.c
 	util/lexer.c
+	util/task.c
 	util/dstr.c
 	util/utf8.c
 	util/crc32.c
 	util/text-lookup.c
 	util/cf-parser.c
-	util/profiler.c)
+	util/profiler.c
+	util/bitstream.c)
 set(libobs_util_HEADERS
+	util/curl/curl-helper.h
+	util/sse-intrin.h
 	util/array-serializer.h
 	util/file-serializer.h
 	util/utf8.h
 	util/crc32.h
 	util/base.h
 	util/text-lookup.h
-	util/vc/vc_inttypes.h
-	util/vc/vc_stdbool.h
-	util/vc/vc_stdint.h
 	util/bmem.h
 	util/c99defs.h
+	util/util_uint64.h
 	util/util_uint128.h
 	util/cf-parser.h
 	util/threading.h
@@ -359,9 +414,12 @@ set(libobs_util_HEADERS
 	util/serializer.h
 	util/config-file.h
 	util/lexer.h
+	util/task.h
 	util/platform.h
 	util/profiler.h
-	util/profiler.hpp)
+	util/profiler.hpp
+	util/bitstream.h
+	util/util.hpp)
 
 set(libobs_libobs_SOURCES
 	${libobs_PLATFORM_SOURCES}
@@ -377,6 +435,7 @@ set(libobs_libobs_SOURCES
 	obs.c
 	obs-properties.c
 	obs-data.c
+	obs-missing-files.c
 	obs-hotkey.c
 	obs-hotkey-name-map.c
 	obs-module.c
@@ -387,6 +446,20 @@ set(libobs_libobs_SOURCES
 	obs-video-gpu-encode.c
 	obs-video.c)
 set(libobs_libobs_HEADERS
+	util/simde/check.h
+	util/simde/debug-trap.h
+	util/simde/hedley.h
+	util/simde/simde-align.h
+	util/simde/simde-arch.h
+	util/simde/simde-common.h
+	util/simde/simde-constify.h
+	util/simde/simde-detect-clang.h
+	util/simde/simde-diagnostic.h
+	util/simde/simde-features.h
+	util/simde/simde-math.h
+	util/simde/x86/mmx.h
+	util/simde/x86/sse2.h
+	util/simde/x86/sse.h
 	${libobs_PLATFORM_HEADERS}
 	obs-audio-controls.h
 	obs-defs.h
@@ -398,6 +471,7 @@ set(libobs_libobs_HEADERS
 	obs-ui.h
 	obs-properties.h
 	obs-data.h
+	obs-missing-files.h
 	obs-interaction.h
 	obs-hotkey.h
 	obs-hotkeys.h
@@ -427,8 +501,31 @@ set(libobs_HEADERS
 	${libobs_audio_monitoring_HEADERS}
 	)
 
+set(libobs_data_EFFECTS
+	data/area.effect
+	data/bicubic_scale.effect
+	data/bilinear_lowres_scale.effect
+	data/default.effect
+	data/default_rect.effect
+	data/deinterlace_base.effect
+	data/deinterlace_blend.effect
+	data/deinterlace_blend_2x.effect
+	data/deinterlace_discard.effect
+	data/deinterlace_discard_2x.effect
+	data/deinterlace_linear.effect
+	data/deinterlace_linear_2x.effect
+	data/deinterlace_yadif.effect
+	data/deinterlace_yadif_2x.effect
+	data/format_conversion.effect
+	data/lanczos_scale.effect
+	data/opaque.effect
+	data/premultiplied_alpha.effect
+	data/repeat.effect
+	data/solid.effect)
+
 source_group("callback\\Source Files" FILES ${libobs_callback_SOURCES})
 source_group("callback\\Header Files" FILES ${libobs_callback_HEADERS})
+source_group("data\\Effect Files" FILES ${libobs_data_EFFECTS})
 source_group("graphics\\Source Files" FILES ${libobs_graphics_SOURCES})
 source_group("graphics\\Header Files" FILES ${libobs_graphics_HEADERS})
 source_group("libobs\\Source Files" FILES ${libobs_libobs_SOURCES})
@@ -440,24 +537,26 @@ source_group("util\\Header Files" FILES ${libobs_util_HEADERS})
 source_group("audio-monitoring\\Source Files" FILES ${libobs_audio_monitoring_SOURCES})
 source_group("audio-monitoring\\Header Files" FILES ${libobs_audio_monitoring_HEADERS})
 
-if(BUILD_CAPTIONS)
-	include_directories(${CMAKE_SOURCE_DIR}/deps/libcaption)
-	set(libobs_PLATFORM_DEPS
-		${libobs_PLATFORM_DEPS}
-		caption)
-endif()
+include_directories(${CMAKE_SOURCE_DIR}/deps/libcaption)
+set(libobs_PLATFORM_DEPS
+	${libobs_PLATFORM_DEPS}
+	caption)
 
-add_library(libobs SHARED ${libobs_SOURCES} ${libobs_HEADERS})
+add_library(libobs SHARED ${libobs_SOURCES} ${libobs_HEADERS} ${libobs_data_EFFECTS})
 if(UNIX AND NOT APPLE)
 	set(DEST_DIR "${CMAKE_INSTALL_PREFIX}")
 	foreach(LIB "obs" "rt")
 		set(PRIVATE_LIBS "${PRIVATE_LIBS} -l${LIB}")
 	endforeach()
+	if(LOWERCASE_CMAKE_SYSTEM_PROCESSOR MATCHES "^(powerpc|ppc)64(le)?")
+		set(PPC64_CFLAGS "-DNO_WARN_X86_INTRINSICS -mvsx")
+	endif()
 	CONFIGURE_FILE("libobs.pc.in" "libobs.pc" @ONLY)
-	install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libobs.pc" DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/pkgconfig")
+	install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libobs.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
 endif()
 
 set_target_properties(libobs PROPERTIES
+	FOLDER "core"
 	OUTPUT_NAME obs
 	VERSION "0"
 	SOVERSION "0")
@@ -465,23 +564,14 @@ target_compile_definitions(libobs
 	PUBLIC
 		HAVE_OBSCONFIG_H)
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(powerpc|ppc)64le")
-	target_compile_options(libobs
-		PUBLIC
-			-mvsx)
-	add_compile_definitions(NO_WARN_X86_INTRINSICS)
-elseif(NOT MSVC)
-	target_compile_options(libobs
-		PUBLIC
-			-mmmx
-			-msse
-			-msse2)
-endif()
-
+target_compile_definitions(libobs
+	PUBLIC
+	${ARCH_SIMD_DEFINES})
 
 target_compile_options(libobs
 	PUBLIC
-		"${THREADS_DEFINITIONS}")
+	${ARCH_SIMD_FLAGS})
+
 target_include_directories(libobs
 	PUBLIC
 		"$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
@@ -494,8 +584,7 @@ target_link_libraries(libobs
 		${OBS_JANSSON_IMPORT}
 		${FFMPEG_LIBRARIES}
 		${ZLIB_LIBRARIES}
-	PUBLIC
-		${THREADS_LIBRARIES})
+		Threads::Threads)
 
 install_obs_core(libobs EXPORT LibObs)
 install_obs_data(libobs data libobs)

@@ -20,8 +20,12 @@
 #include "gl-subsystem.h"
 
 /* Goofy Windows.h macros need to be removed */
-#undef far
+#ifdef near
 #undef near
+#endif
+#ifdef far
+#undef far
+#endif
 
 /* #define SHOW_ALL_GL_MESSAGES */
 
@@ -130,23 +134,21 @@ static void gl_enable_debug() {}
 
 static bool gl_init_extensions(struct gs_device *device)
 {
-	if (!GLAD_GL_VERSION_2_1) {
-		blog(LOG_ERROR, "obs-studio requires OpenGL version 2.1 or "
-				"higher.");
+	if (!GLAD_GL_VERSION_3_3) {
+		blog(LOG_ERROR,
+		     "obs-studio requires OpenGL version 3.3 or higher.");
 		return false;
 	}
 
 	gl_enable_debug();
 
-	if (!GLAD_GL_VERSION_3_0 && !GLAD_GL_ARB_framebuffer_object) {
-		blog(LOG_ERROR, "OpenGL extension ARB_framebuffer_object "
+	if (!GLAD_GL_EXT_texture_sRGB_decode) {
+		blog(LOG_ERROR, "OpenGL extension EXT_texture_sRGB_decode "
 				"is required.");
 		return false;
 	}
 
-	if (GLAD_GL_VERSION_3_2 || GLAD_GL_ARB_seamless_cube_map) {
-		gl_enable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
-	}
+	gl_enable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 
 	if (GLAD_GL_VERSION_4_3 || GLAD_GL_ARB_copy_image)
 		device->copy_type = COPY_TYPE_ARB;
@@ -182,8 +184,11 @@ void convert_sampler_info(struct gs_sampler_state *sampler,
 	sampler->max_anisotropy = info->max_anisotropy;
 
 	max_anisotropy_max = 1;
-	glGetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &max_anisotropy_max);
-	gl_success("glGetIntegerv(GL_MAX_TEXTURE_ANISOTROPY_MAX)");
+	if (GLAD_GL_EXT_texture_filter_anisotropic) {
+		glGetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT,
+			      &max_anisotropy_max);
+		gl_success("glGetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT)");
+	}
 
 	if (1 <= sampler->max_anisotropy &&
 	    sampler->max_anisotropy <= max_anisotropy_max)
@@ -193,6 +198,8 @@ void convert_sampler_info(struct gs_sampler_state *sampler,
 		sampler->max_anisotropy = 1;
 	else if (sampler->max_anisotropy > max_anisotropy_max)
 		sampler->max_anisotropy = max_anisotropy_max;
+
+	vec4_from_rgba(&sampler->border_color, info->border_color);
 
 	blog(LOG_DEBUG,
 	     "convert_sampler_info: 1 <= max_anisotropy <= "
@@ -250,7 +257,17 @@ int device_create(gs_device_t **p_device, uint32_t adapter)
 	gl_enable(GL_CULL_FACE);
 	gl_gen_vertex_arrays(1, &device->empty_vao);
 
-	device_leave_context(device);
+	struct gs_sampler_info raw_load_info;
+	raw_load_info.filter = GS_FILTER_POINT;
+	raw_load_info.address_u = GS_ADDRESS_BORDER;
+	raw_load_info.address_v = GS_ADDRESS_BORDER;
+	raw_load_info.address_w = GS_ADDRESS_BORDER;
+	raw_load_info.max_anisotropy = 1;
+	raw_load_info.border_color = 0;
+	device->raw_load_sampler =
+		device_samplerstate_create(device, &raw_load_info);
+
+	gl_clear_context(device);
 	device->cur_swap = NULL;
 
 #ifdef _WIN32
@@ -278,6 +295,7 @@ void device_destroy(gs_device_t *device)
 		while (device->first_program)
 			gs_program_destroy(device->first_program);
 
+		samplerstate_release(device->raw_load_sampler);
 		gl_delete_vertex_arrays(1, &device->empty_vao);
 
 		da_free(device->proj_stack);
@@ -354,24 +372,6 @@ uint32_t device_get_height(const gs_device_t *device)
 	}
 }
 
-gs_texture_t *device_voltexture_create(gs_device_t *device, uint32_t width,
-				       uint32_t height, uint32_t depth,
-				       enum gs_color_format color_format,
-				       uint32_t levels, const uint8_t **data,
-				       uint32_t flags)
-{
-	/* TODO */
-	UNUSED_PARAMETER(device);
-	UNUSED_PARAMETER(width);
-	UNUSED_PARAMETER(height);
-	UNUSED_PARAMETER(depth);
-	UNUSED_PARAMETER(color_format);
-	UNUSED_PARAMETER(levels);
-	UNUSED_PARAMETER(data);
-	UNUSED_PARAMETER(flags);
-	return NULL;
-}
-
 gs_samplerstate_t *
 device_samplerstate_create(gs_device_t *device,
 			   const struct gs_sampler_info *info)
@@ -384,6 +384,31 @@ device_samplerstate_create(gs_device_t *device,
 
 	convert_sampler_info(sampler, info);
 	return sampler;
+}
+
+gs_timer_t *device_timer_create(gs_device_t *device)
+{
+	UNUSED_PARAMETER(device);
+
+	struct gs_timer *timer;
+
+	GLuint queries[2];
+	glGenQueries(2, queries);
+	if (!gl_success("glGenQueries"))
+		return NULL;
+
+	timer = bzalloc(sizeof(struct gs_timer));
+	timer->queries[0] = queries[0];
+	timer->queries[1] = queries[1];
+
+	return timer;
+}
+
+gs_timer_range_t *device_timer_range_create(gs_device_t *device)
+{
+	UNUSED_PARAMETER(device);
+
+	return NULL;
 }
 
 enum gs_texture_type device_get_texture_type(const gs_texture_t *texture)
@@ -450,9 +475,19 @@ static bool load_texture_sampler(gs_texture_t *tex, gs_samplerstate_t *ss)
 		success = false;
 	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_WRAP_R, ss->address_w))
 		success = false;
-	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_MAX_ANISOTROPY_EXT,
-			    ss->max_anisotropy))
-		success = false;
+	if (ss->address_u == GL_CLAMP_TO_BORDER ||
+	    ss->address_v == GL_CLAMP_TO_BORDER ||
+	    ss->address_w == GL_CLAMP_TO_BORDER) {
+		if (!gl_tex_param_fv(tex->gl_target, GL_TEXTURE_BORDER_COLOR,
+				     ss->border_color.ptr))
+			success = false;
+	}
+	if (GLAD_GL_EXT_texture_filter_anisotropic) {
+		if (!gl_tex_param_i(tex->gl_target,
+				    GL_TEXTURE_MAX_ANISOTROPY_EXT,
+				    ss->max_anisotropy))
+			success = false;
+	}
 
 	apply_swizzle(tex);
 
@@ -476,7 +511,8 @@ static inline struct gs_shader_param *get_texture_param(gs_device_t *device,
 	return NULL;
 }
 
-void device_load_texture(gs_device_t *device, gs_texture_t *tex, int unit)
+static void device_load_texture_internal(gs_device_t *device, gs_texture_t *tex,
+					 int unit, GLint decode)
 {
 	struct gs_shader_param *param;
 	struct gs_sampler_state *sampler;
@@ -507,14 +543,17 @@ void device_load_texture(gs_device_t *device, gs_texture_t *tex, int unit)
 	if (!tex)
 		return;
 
-	// texelFetch doesn't need a sampler
 	if (param->sampler_id != (size_t)-1)
 		sampler = device->cur_samplers[param->sampler_id];
 	else
-		sampler = NULL;
+		sampler = device->raw_load_sampler;
 
 	if (!gl_bind_texture(tex->gl_target, tex->texture))
 		goto fail;
+
+	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_SRGB_DECODE_EXT, decode))
+		goto fail;
+
 	if (sampler && !load_texture_sampler(tex, sampler))
 		goto fail;
 
@@ -522,6 +561,16 @@ void device_load_texture(gs_device_t *device, gs_texture_t *tex, int unit)
 
 fail:
 	blog(LOG_ERROR, "device_load_texture (GL) failed");
+}
+
+void device_load_texture(gs_device_t *device, gs_texture_t *tex, int unit)
+{
+	device_load_texture_internal(device, tex, unit, GL_SKIP_DECODE_EXT);
+}
+
+void device_load_texture_srgb(gs_device_t *device, gs_texture_t *tex, int unit)
+{
+	device_load_texture_internal(device, tex, unit, GL_DECODE_EXT);
 }
 
 static bool load_sampler_on_textures(gs_device_t *device, gs_samplerstate_t *ss,
@@ -848,6 +897,25 @@ fail:
 	blog(LOG_ERROR, "device_set_cube_render_target (GL) failed");
 }
 
+void device_enable_framebuffer_srgb(gs_device_t *device, bool enable)
+{
+	UNUSED_PARAMETER(device);
+
+	if (enable)
+		gl_enable(GL_FRAMEBUFFER_SRGB);
+	else
+		gl_disable(GL_FRAMEBUFFER_SRGB);
+}
+
+bool device_framebuffer_srgb_enabled(gs_device_t *device)
+{
+	UNUSED_PARAMETER(device);
+
+	const GLboolean enabled = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+	gl_success("glIsEnabled");
+	return enabled == GL_TRUE;
+}
+
 void device_copy_texture_region(gs_device_t *device, gs_texture_t *dst,
 				uint32_t dst_x, uint32_t dst_y,
 				gs_texture_t *src, uint32_t src_x,
@@ -902,6 +970,12 @@ void device_copy_texture(gs_device_t *device, gs_texture_t *dst,
 			 gs_texture_t *src)
 {
 	device_copy_texture_region(device, dst, 0, 0, src, 0, 0, 0, 0);
+}
+
+void device_begin_frame(gs_device_t *device)
+{
+	/* does nothing */
+	UNUSED_PARAMETER(device);
 }
 
 void device_begin_scene(gs_device_t *device)
@@ -1197,6 +1271,17 @@ void device_blend_function_separate(gs_device_t *device,
 	UNUSED_PARAMETER(device);
 }
 
+void device_blend_op(gs_device_t *device, enum gs_blend_op_type op)
+{
+	GLenum gl_blend_op = convert_gs_blend_op_type(op);
+
+	glBlendEquation(gl_blend_op);
+	if (!gl_success("glBlendEquation"))
+		blog(LOG_ERROR, "device_blend_op (GL) failed");
+
+	UNUSED_PARAMETER(device);
+}
+
 void device_depth_function(gs_device_t *device, enum gs_depth_test test)
 {
 	GLenum gl_test = convert_gs_depth_test(test);
@@ -1253,7 +1338,6 @@ void device_set_viewport(gs_device_t *device, int x, int y, int width,
 			 int height)
 {
 	uint32_t base_height = 0;
-	int gl_y = 0;
 
 	/* GL uses bottom-up coordinates for viewports.  We want top-down */
 	if (device->cur_render_target) {
@@ -1263,7 +1347,8 @@ void device_set_viewport(gs_device_t *device, int x, int y, int width,
 		gl_getclientsize(device->cur_swap, &dw, &base_height);
 	}
 
-	if (base_height)
+	GLint gl_y = y;
+	if (base_height && !device->cur_fbo)
 		gl_y = base_height - y - height;
 
 	glViewport(x, gl_y, width, height);
@@ -1396,12 +1481,6 @@ void gs_swapchain_destroy(gs_swapchain_t *swapchain)
 	bfree(swapchain);
 }
 
-void gs_voltexture_destroy(gs_texture_t *voltex)
-{
-	/* TODO */
-	UNUSED_PARAMETER(voltex);
-}
-
 uint32_t gs_voltexture_get_width(const gs_texture_t *voltex)
 {
 	/* TODO */
@@ -1442,4 +1521,68 @@ void gs_samplerstate_destroy(gs_samplerstate_t *samplerstate)
 				samplerstate->device->cur_samplers[i] = NULL;
 
 	samplerstate_release(samplerstate);
+}
+
+void gs_timer_destroy(gs_timer_t *timer)
+{
+	if (!timer)
+		return;
+
+	glDeleteQueries(2, timer->queries);
+	gl_success("glDeleteQueries");
+
+	bfree(timer);
+}
+
+void gs_timer_begin(gs_timer_t *timer)
+{
+	glQueryCounter(timer->queries[0], GL_TIMESTAMP);
+	gl_success("glQueryCounter");
+}
+
+void gs_timer_end(gs_timer_t *timer)
+{
+	glQueryCounter(timer->queries[1], GL_TIMESTAMP);
+	gl_success("glQueryCounter");
+}
+
+bool gs_timer_get_data(gs_timer_t *timer, uint64_t *ticks)
+{
+	GLint available = 0;
+	glGetQueryObjectiv(timer->queries[1], GL_QUERY_RESULT_AVAILABLE,
+			   &available);
+
+	GLuint64 begin, end;
+	glGetQueryObjectui64v(timer->queries[0], GL_QUERY_RESULT, &begin);
+	gl_success("glGetQueryObjectui64v");
+	glGetQueryObjectui64v(timer->queries[1], GL_QUERY_RESULT, &end);
+	gl_success("glGetQueryObjectui64v");
+
+	*ticks = end - begin;
+	return true;
+}
+
+void gs_timer_range_destroy(gs_timer_range_t *range)
+{
+	UNUSED_PARAMETER(range);
+}
+
+void gs_timer_range_begin(gs_timer_range_t *range)
+{
+	UNUSED_PARAMETER(range);
+}
+
+void gs_timer_range_end(gs_timer_range_t *range)
+{
+	UNUSED_PARAMETER(range);
+}
+
+bool gs_timer_range_get_data(gs_timer_range_t *range, bool *disjoint,
+			     uint64_t *frequency)
+{
+	UNUSED_PARAMETER(range);
+
+	*disjoint = false;
+	*frequency = 1000000000;
+	return true;
 }

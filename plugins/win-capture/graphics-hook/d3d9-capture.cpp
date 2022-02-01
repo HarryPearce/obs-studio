@@ -3,13 +3,14 @@
 #include <dxgi.h>
 
 #include "graphics-hook.h"
-#include "../funchook.h"
 #include "d3d9-patches.hpp"
+
+#include <detours.h>
 
 typedef HRESULT(STDMETHODCALLTYPE *present_t)(IDirect3DDevice9 *, CONST RECT *,
 					      CONST RECT *, HWND,
 					      CONST RGNDATA *);
-typedef HRESULT(STDMETHODCALLTYPE *present_ex_t)(IDirect3DDevice9 *,
+typedef HRESULT(STDMETHODCALLTYPE *present_ex_t)(IDirect3DDevice9Ex *,
 						 CONST RECT *, CONST RECT *,
 						 HWND, CONST RGNDATA *, DWORD);
 typedef HRESULT(STDMETHODCALLTYPE *present_swap_t)(IDirect3DSwapChain9 *,
@@ -24,11 +25,11 @@ typedef HRESULT(STDMETHODCALLTYPE *reset_ex_t)(IDirect3DDevice9 *,
 
 typedef HRESULT(WINAPI *createfactory1_t)(REFIID, void **);
 
-static struct func_hook present;
-static struct func_hook present_ex;
-static struct func_hook present_swap;
-static struct func_hook reset;
-static struct func_hook reset_ex;
+present_t RealPresent = NULL;
+present_ex_t RealPresentEx = NULL;
+present_swap_t RealPresentSwap = NULL;
+reset_t RealReset = NULL;
+reset_ex_t RealResetEx = NULL;
 
 struct d3d9_data {
 	HMODULE d3d9;
@@ -38,7 +39,6 @@ struct d3d9_data {
 	D3DFORMAT d3d9_format;
 	DXGI_FORMAT dxgi_format;
 	bool using_shtex;
-	bool using_scale;
 
 	/* shared texture */
 	IDirect3DSurface9 *d3d9_copytex;
@@ -51,7 +51,6 @@ struct d3d9_data {
 
 	/* shared memory */
 	IDirect3DSurface9 *copy_surfaces[NUM_BUFFERS];
-	IDirect3DSurface9 *render_targets[NUM_BUFFERS];
 	IDirect3DQuery9 *queries[NUM_BUFFERS];
 	struct shmem_data *shmem_info;
 	bool texture_mapped[NUM_BUFFERS];
@@ -83,8 +82,6 @@ static void d3d9_free()
 					data.copy_surfaces[i]->UnlockRect();
 				data.copy_surfaces[i]->Release();
 			}
-			if (data.render_targets[i])
-				data.render_targets[i]->Release();
 			if (data.queries[i])
 				data.queries[i]->Release();
 		}
@@ -113,7 +110,6 @@ const static D3D_FEATURE_LEVEL feature_levels[] = {
 	D3D_FEATURE_LEVEL_11_0,
 	D3D_FEATURE_LEVEL_10_1,
 	D3D_FEATURE_LEVEL_10_0,
-	D3D_FEATURE_LEVEL_9_3,
 };
 
 static inline bool shex_init_d3d11()
@@ -290,7 +286,7 @@ static inline bool d3d9_shtex_init_copytex()
 	return true;
 }
 
-static bool d3d9_shtex_init(uint32_t cx, uint32_t cy, HWND window)
+static bool d3d9_shtex_init(HWND window)
 {
 	data.using_shtex = true;
 
@@ -303,8 +299,8 @@ static bool d3d9_shtex_init(uint32_t cx, uint32_t cy, HWND window)
 	if (!d3d9_shtex_init_copytex()) {
 		return false;
 	}
-	if (!capture_init_shtex(&data.shtex_info, window, cx, cy, data.cx,
-				data.cy, data.dxgi_format, false,
+	if (!capture_init_shtex(&data.shtex_info, window, data.cx, data.cy,
+				data.dxgi_format, false,
 				(uintptr_t)data.handle)) {
 		return false;
 	}
@@ -341,17 +337,6 @@ static bool d3d9_shmem_init_buffers(size_t buffer)
 		data.copy_surfaces[buffer]->UnlockRect();
 	}
 
-	hr = data.device->CreateRenderTarget(data.cx, data.cy, data.d3d9_format,
-					     D3DMULTISAMPLE_NONE, 0, false,
-					     &data.render_targets[buffer],
-					     nullptr);
-	if (FAILED(hr)) {
-		hlog_hr("d3d9_shmem_init_buffers: Failed to create render "
-			"target",
-			hr);
-		return false;
-	}
-
 	hr = data.device->CreateQuery(D3DQUERYTYPE_EVENT,
 				      &data.queries[buffer]);
 	if (FAILED(hr)) {
@@ -362,7 +347,7 @@ static bool d3d9_shmem_init_buffers(size_t buffer)
 	return true;
 }
 
-static bool d3d9_shmem_init(uint32_t cx, uint32_t cy, HWND window)
+static bool d3d9_shmem_init(HWND window)
 {
 	data.using_shtex = false;
 
@@ -371,8 +356,8 @@ static bool d3d9_shmem_init(uint32_t cx, uint32_t cy, HWND window)
 			return false;
 		}
 	}
-	if (!capture_init_shmem(&data.shmem_info, window, cx, cy, data.cx,
-				data.cy, data.pitch, data.dxgi_format, false)) {
+	if (!capture_init_shmem(&data.shmem_info, window, data.cx, data.cy,
+				data.pitch, data.dxgi_format, false)) {
 		return false;
 	}
 
@@ -404,8 +389,7 @@ static bool d3d9_get_swap_desc(D3DPRESENT_PARAMETERS &pp)
 	return true;
 }
 
-static bool d3d9_init_format_backbuffer(uint32_t &cx, uint32_t &cy,
-					HWND &window)
+static bool d3d9_init_format_backbuffer(HWND &window)
 {
 	IDirect3DSurface9 *back_buffer = nullptr;
 	D3DPRESENT_PARAMETERS pp;
@@ -433,23 +417,15 @@ static bool d3d9_init_format_backbuffer(uint32_t &cx, uint32_t &cy,
 
 	data.d3d9_format = desc.Format;
 	data.dxgi_format = d3d9_to_dxgi_format(desc.Format);
-	data.using_scale = global_hook_info->use_scale;
 	window = pp.hDeviceWindow;
-	cx = desc.Width;
-	cy = desc.Height;
 
-	if (data.using_scale) {
-		data.cx = global_hook_info->cx;
-		data.cy = global_hook_info->cy;
-	} else {
-		data.cx = desc.Width;
-		data.cy = desc.Height;
-	}
+	data.cx = desc.Width;
+	data.cy = desc.Height;
 
 	return true;
 }
 
-static bool d3d9_init_format_swapchain(uint32_t &cx, uint32_t &cy, HWND &window)
+static bool d3d9_init_format_swapchain(HWND &window)
 {
 	D3DPRESENT_PARAMETERS pp;
 
@@ -459,18 +435,10 @@ static bool d3d9_init_format_swapchain(uint32_t &cx, uint32_t &cy, HWND &window)
 
 	data.dxgi_format = d3d9_to_dxgi_format(pp.BackBufferFormat);
 	data.d3d9_format = pp.BackBufferFormat;
-	data.using_scale = global_hook_info->use_scale;
 	window = pp.hDeviceWindow;
-	cx = pp.BackBufferWidth;
-	cy = pp.BackBufferHeight;
 
-	if (data.using_scale) {
-		data.cx = global_hook_info->cx;
-		data.cy = global_hook_info->cy;
-	} else {
-		data.cx = pp.BackBufferWidth;
-		data.cy = pp.BackBufferHeight;
-	}
+	data.cx = pp.BackBufferWidth;
+	data.cy = pp.BackBufferHeight;
 
 	return true;
 }
@@ -482,8 +450,6 @@ static void d3d9_init(IDirect3DDevice9 *device)
 		global_hook_info->offsets.d3d9.d3d9_clsoff &&
 		global_hook_info->offsets.d3d9.is_d3d9ex_clsoff;
 	bool success;
-	uint32_t cx = 0;
-	uint32_t cy = 0;
 	HWND window = nullptr;
 	HRESULT hr;
 
@@ -501,17 +467,17 @@ static void d3d9_init(IDirect3DDevice9 *device)
 		data.patch = -1;
 	}
 
-	if (!d3d9_init_format_backbuffer(cx, cy, window)) {
-		if (!d3d9_init_format_swapchain(cx, cy, window)) {
+	if (!d3d9_init_format_backbuffer(window)) {
+		if (!d3d9_init_format_swapchain(window)) {
 			return;
 		}
 	}
 
 	if (global_hook_info->force_shmem ||
 	    (!d3d9ex && data.patch == -1 && !has_d3d9ex_bool_offset)) {
-		success = d3d9_shmem_init(cx, cy, window);
+		success = d3d9_shmem_init(window);
 	} else {
-		success = d3d9_shtex_init(cx, cy, window);
+		success = d3d9_shtex_init(window);
 	}
 
 	if (!success)
@@ -540,73 +506,54 @@ static inline HRESULT get_backbuffer(IDirect3DDevice9 *device,
 
 static inline void d3d9_shtex_capture(IDirect3DSurface9 *backbuffer)
 {
-	D3DTEXTUREFILTERTYPE filter;
 	HRESULT hr;
 
-	filter = data.using_scale ? D3DTEXF_LINEAR : D3DTEXF_NONE;
-
 	hr = data.device->StretchRect(backbuffer, nullptr, data.d3d9_copytex,
-				      nullptr, filter);
+				      nullptr, D3DTEXF_NONE);
 	if (FAILED(hr))
 		hlog_hr("d3d9_shtex_capture: StretchRect failed", hr);
 }
 
-static inline void d3d9_shmem_capture_queue_copy()
+static void d3d9_shmem_capture_copy(int i)
 {
-	for (int i = 0; i < NUM_BUFFERS; i++) {
-		IDirect3DSurface9 *target = data.copy_surfaces[i];
-		D3DLOCKED_RECT rect;
-		HRESULT hr;
+	IDirect3DSurface9 *target = data.copy_surfaces[i];
+	D3DLOCKED_RECT rect;
+	HRESULT hr;
 
-		if (!data.issued_queries[i]) {
-			continue;
-		}
-		if (data.queries[i]->GetData(0, 0, 0) != S_OK) {
-			continue;
-		}
+	if (!data.issued_queries[i]) {
+		return;
+	}
+	if (data.queries[i]->GetData(0, 0, 0) != S_OK) {
+		return;
+	}
 
-		data.issued_queries[i] = false;
+	data.issued_queries[i] = false;
 
-		hr = target->LockRect(&rect, nullptr, D3DLOCK_READONLY);
-		if (SUCCEEDED(hr)) {
-			data.texture_mapped[i] = true;
-			shmem_copy_data(i, rect.pBits);
-		}
-		break;
+	hr = target->LockRect(&rect, nullptr, D3DLOCK_READONLY);
+	if (SUCCEEDED(hr)) {
+		data.texture_mapped[i] = true;
+		shmem_copy_data(i, rect.pBits);
 	}
 }
 
 static inline void d3d9_shmem_capture(IDirect3DSurface9 *backbuffer)
 {
-	D3DTEXTUREFILTERTYPE filter;
-	IDirect3DSurface9 *copy;
 	int next_tex;
 	HRESULT hr;
 
-	d3d9_shmem_capture_queue_copy();
-
-	next_tex = (data.cur_tex == NUM_BUFFERS - 1) ? 0 : data.cur_tex + 1;
-	filter = data.using_scale ? D3DTEXF_LINEAR : D3DTEXF_NONE;
-	copy = data.render_targets[data.cur_tex];
-
-	hr = data.device->StretchRect(backbuffer, nullptr, copy, nullptr,
-				      filter);
-
-	if (FAILED(hr)) {
-		hlog_hr("d3d9_shmem_capture: StretchRect failed", hr);
-		return;
-	}
+	next_tex = (data.cur_tex + 1) % NUM_BUFFERS;
+	d3d9_shmem_capture_copy(next_tex);
 
 	if (data.copy_wait < NUM_BUFFERS - 1) {
 		data.copy_wait++;
 	} else {
-		IDirect3DSurface9 *src = data.render_targets[next_tex];
-		IDirect3DSurface9 *dst = data.copy_surfaces[next_tex];
+		IDirect3DSurface9 *src = backbuffer;
+		IDirect3DSurface9 *dst = data.copy_surfaces[data.cur_tex];
 
-		if (shmem_texture_data_lock(next_tex)) {
+		if (shmem_texture_data_lock(data.cur_tex)) {
 			dst->UnlockRect();
-			data.texture_mapped[next_tex] = false;
-			shmem_texture_data_unlock(next_tex);
+			data.texture_mapped[data.cur_tex] = false;
+			shmem_texture_data_unlock(data.cur_tex);
 		}
 
 		hr = data.device->GetRenderTargetData(src, dst);
@@ -616,8 +563,8 @@ static inline void d3d9_shmem_capture(IDirect3DSurface9 *backbuffer)
 				hr);
 		}
 
-		data.queries[next_tex]->Issue(D3DISSUE_END);
-		data.issued_queries[next_tex] = true;
+		data.queries[data.cur_tex]->Issue(D3DISSUE_END);
+		data.issued_queries[data.cur_tex] = true;
 	}
 
 	data.cur_tex = next_tex;
@@ -695,17 +642,14 @@ static HRESULT STDMETHODCALLTYPE hook_present(IDirect3DDevice9 *device,
 					      CONST RGNDATA *dirty_region)
 {
 	IDirect3DSurface9 *backbuffer = nullptr;
-	HRESULT hr;
 
 	if (!hooked_reset)
 		setup_reset_hooks(device);
 
 	present_begin(device, backbuffer);
 
-	unhook(&present);
-	present_t call = (present_t)present.call_addr;
-	hr = call(device, src_rect, dst_rect, override_window, dirty_region);
-	rehook(&present);
+	const HRESULT hr = RealPresent(device, src_rect, dst_rect,
+				       override_window, dirty_region);
 
 	present_end(device, backbuffer);
 
@@ -713,22 +657,18 @@ static HRESULT STDMETHODCALLTYPE hook_present(IDirect3DDevice9 *device,
 }
 
 static HRESULT STDMETHODCALLTYPE hook_present_ex(
-	IDirect3DDevice9 *device, CONST RECT *src_rect, CONST RECT *dst_rect,
+	IDirect3DDevice9Ex *device, CONST RECT *src_rect, CONST RECT *dst_rect,
 	HWND override_window, CONST RGNDATA *dirty_region, DWORD flags)
 {
 	IDirect3DSurface9 *backbuffer = nullptr;
-	HRESULT hr;
 
 	if (!hooked_reset)
 		setup_reset_hooks(device);
 
 	present_begin(device, backbuffer);
 
-	unhook(&present_ex);
-	present_ex_t call = (present_ex_t)present_ex.call_addr;
-	hr = call(device, src_rect, dst_rect, override_window, dirty_region,
-		  flags);
-	rehook(&present_ex);
+	const HRESULT hr = RealPresentEx(device, src_rect, dst_rect,
+					 override_window, dirty_region, flags);
 
 	present_end(device, backbuffer);
 
@@ -741,12 +681,11 @@ static HRESULT STDMETHODCALLTYPE hook_present_swap(
 {
 	IDirect3DSurface9 *backbuffer = nullptr;
 	IDirect3DDevice9 *device = nullptr;
-	HRESULT hr;
 
 	if (!present_recurse) {
-		hr = swap->GetDevice(&device);
-		if (SUCCEEDED(hr)) {
-			device->Release();
+		IDirect3DDevice9 *temp;
+		if (SUCCEEDED(swap->GetDevice(&temp))) {
+			device = temp;
 		}
 	}
 
@@ -757,14 +696,13 @@ static HRESULT STDMETHODCALLTYPE hook_present_swap(
 		present_begin(device, backbuffer);
 	}
 
-	unhook(&present_swap);
-	present_swap_t call = (present_swap_t)present_swap.call_addr;
-	hr = call(swap, src_rect, dst_rect, override_window, dirty_region,
-		  flags);
-	rehook(&present_swap);
+	const HRESULT hr = RealPresentSwap(
+		swap, src_rect, dst_rect, override_window, dirty_region, flags);
 
-	if (device)
+	if (device) {
 		present_end(device, backbuffer);
+		device->Release();
+	}
 
 	return hr;
 }
@@ -772,34 +710,20 @@ static HRESULT STDMETHODCALLTYPE hook_present_swap(
 static HRESULT STDMETHODCALLTYPE hook_reset(IDirect3DDevice9 *device,
 					    D3DPRESENT_PARAMETERS *params)
 {
-	HRESULT hr;
-
 	if (capture_active())
 		d3d9_free();
 
-	unhook(&reset);
-	reset_t call = (reset_t)reset.call_addr;
-	hr = call(device, params);
-	rehook(&reset);
-
-	return hr;
+	return RealReset(device, params);
 }
 
 static HRESULT STDMETHODCALLTYPE hook_reset_ex(IDirect3DDevice9 *device,
 					       D3DPRESENT_PARAMETERS *params,
 					       D3DDISPLAYMODEEX *dmex)
 {
-	HRESULT hr;
-
 	if (capture_active())
 		d3d9_free();
 
-	unhook(&reset_ex);
-	reset_ex_t call = (reset_ex_t)reset_ex.call_addr;
-	hr = call(device, params, dmex);
-	rehook(&reset_ex);
-
-	return hr;
+	return RealResetEx(device, params, dmex);
 }
 
 static void setup_reset_hooks(IDirect3DDevice9 *device)
@@ -808,21 +732,30 @@ static void setup_reset_hooks(IDirect3DDevice9 *device)
 	uintptr_t *vtable = *(uintptr_t **)device;
 	HRESULT hr;
 
-	hook_init(&reset, (void *)vtable[16], (void *)hook_reset,
-		  "IDirect3DDevice9::Reset");
-	rehook(&reset);
+	DetourTransactionBegin();
 
-	hr = device->QueryInterface(__uuidof(IDirect3DDevice9Ex),
-				    (void **)&d3d9ex);
+	RealReset = (reset_t)vtable[16];
+	DetourAttach((PVOID *)&RealReset, hook_reset);
+
+	hr = device->QueryInterface(IID_PPV_ARGS(&d3d9ex));
 	if (SUCCEEDED(hr)) {
-		hook_init(&reset_ex, (void *)vtable[132], (void *)hook_reset_ex,
-			  "IDirect3DDevice9Ex::ResetEx");
-		rehook(&reset_ex);
+		RealResetEx = (reset_ex_t)vtable[132];
+		DetourAttach((PVOID *)&RealResetEx, hook_reset_ex);
 
 		d3d9ex->Release();
 	}
 
-	hooked_reset = true;
+	const LONG error = DetourTransactionCommit();
+	const bool success = error == NO_ERROR;
+	if (success) {
+		hlog("Hooked IDirect3DDevice9::Reset");
+		if (RealResetEx)
+			hlog("Hooked IDirect3DDevice9Ex::ResetEx");
+		hooked_reset = true;
+	} else {
+		RealReset = nullptr;
+		RealResetEx = nullptr;
+	}
 }
 
 typedef HRESULT(WINAPI *d3d9create_ex_t)(UINT, IDirect3D9Ex **);
@@ -932,23 +865,37 @@ bool hook_d3d9(void)
 		return true;
 	}
 
+	DetourTransactionBegin();
+
 	if (present_swap_addr) {
-		hook_init(&present_swap, present_swap_addr,
-			  (void *)hook_present_swap,
-			  "IDirect3DSwapChain9::Present");
-		rehook(&present_swap);
+		RealPresentSwap = (present_swap_t)present_swap_addr;
+		DetourAttach((PVOID *)&RealPresentSwap, hook_present_swap);
 	}
 	if (present_ex_addr) {
-		hook_init(&present_ex, present_ex_addr, (void *)hook_present_ex,
-			  "IDirect3DDevice9Ex::PresentEx");
-		rehook(&present_ex);
+		RealPresentEx = (present_ex_t)present_ex_addr;
+		DetourAttach((PVOID *)&RealPresentEx, hook_present_ex);
 	}
 	if (present_addr) {
-		hook_init(&present, present_addr, (void *)hook_present,
-			  "IDirect3DDevice9::Present");
-		rehook(&present);
+		RealPresent = (present_t)present_addr;
+		DetourAttach((PVOID *)&RealPresent, hook_present);
 	}
 
-	hlog("Hooked D3D9");
-	return true;
+	const LONG error = DetourTransactionCommit();
+	const bool success = error == NO_ERROR;
+	if (success) {
+		if (RealPresentSwap)
+			hlog("Hooked IDirect3DSwapChain9::Present");
+		if (RealPresentEx)
+			hlog("Hooked IDirect3DDevice9Ex::PresentEx");
+		if (RealPresent)
+			hlog("Hooked IDirect3DDevice9::Present");
+		hlog("Hooked D3D9");
+	} else {
+		RealPresentSwap = nullptr;
+		RealPresentEx = nullptr;
+		RealPresent = nullptr;
+		hlog("Failed to attach Detours hook: %ld", error);
+	}
+
+	return success;
 }

@@ -1,5 +1,6 @@
 #include <obs-module.h>
 #include <util/circlebuf.h>
+#include <util/util_uint64.h>
 
 #ifndef SEC_TO_NSEC
 #define SEC_TO_NSEC 1000000000ULL
@@ -115,8 +116,9 @@ static obs_properties_t *async_delay_filter_properties(void *data)
 {
 	obs_properties_t *props = obs_properties_create();
 
-	obs_properties_add_int(props, SETTING_DELAY_MS, TEXT_DELAY_MS, 0, 20000,
-			       1);
+	obs_property_t *p = obs_properties_add_int(props, SETTING_DELAY_MS,
+						   TEXT_DELAY_MS, 0, 20000, 1);
+	obs_property_int_set_suffix(p, " ms");
 
 	UNUSED_PARAMETER(data);
 	return props;
@@ -198,7 +200,8 @@ async_delay_filter_audio(void *data, struct obs_audio_data *audio)
 
 	filter->last_audio_ts = audio->timestamp;
 
-	duration = (uint64_t)audio->frames * SEC_TO_NSEC / filter->samplerate;
+	duration =
+		util_mul_div64(audio->frames, SEC_TO_NSEC, filter->samplerate);
 	end_ts = audio->timestamp + duration;
 
 	for (size_t i = 0; i < MAX_AV_PLANES; i++) {

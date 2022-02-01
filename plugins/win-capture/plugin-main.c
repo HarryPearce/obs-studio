@@ -19,7 +19,8 @@ static HANDLE init_hooks_thread = NULL;
 
 extern bool cached_versions_match(void);
 extern bool load_cached_graphics_offsets(bool is32bit, const char *config_path);
-extern bool load_graphics_offsets(bool is32bit, const char *config_path);
+extern bool load_graphics_offsets(bool is32bit, bool use_hook_address_cache,
+				  const char *config_path);
 
 /* temporary, will eventually be erased once we figure out how to create both
  * 32bit and 64bit versions of the helpers/hook */
@@ -29,22 +30,22 @@ extern bool load_graphics_offsets(bool is32bit, const char *config_path);
 #define IS32BIT true
 #endif
 
-/* note, need to enable cache writing in load-graphics-offsets.c if you turn
- * this back on*/
-#define USE_HOOK_ADDRESS_CACHE false
+static const bool use_hook_address_cache = false;
 
 static DWORD WINAPI init_hooks(LPVOID param)
 {
 	char *config_path = param;
 
-	if (USE_HOOK_ADDRESS_CACHE && cached_versions_match() &&
+	if (use_hook_address_cache && cached_versions_match() &&
 	    load_cached_graphics_offsets(IS32BIT, config_path)) {
 
 		load_cached_graphics_offsets(!IS32BIT, config_path);
 		obs_register_source(&game_capture_info);
 
-	} else if (load_graphics_offsets(IS32BIT, config_path)) {
-		load_graphics_offsets(!IS32BIT, config_path);
+	} else if (load_graphics_offsets(IS32BIT, use_hook_address_cache,
+					 config_path)) {
+		load_graphics_offsets(!IS32BIT, use_hook_address_cache,
+				      config_path);
 	}
 
 	bfree(config_path);
@@ -65,11 +66,19 @@ void wait_for_hook_initialization(void)
 	}
 }
 
+void init_hook_files(void);
+
+bool graphics_uses_d3d11 = false;
+bool wgc_supported = false;
+
 bool obs_module_load(void)
 {
 	struct win_version_info ver;
 	bool win8_or_above = false;
 	char *config_dir;
+
+	struct win_version_info win1903 = {
+		.major = 10, .minor = 0, .build = 18362, .revis = 0};
 
 	config_dir = obs_module_config_path(NULL);
 	if (config_dir) {
@@ -82,18 +91,22 @@ bool obs_module_load(void)
 	win8_or_above = ver.major > 6 || (ver.major == 6 && ver.minor >= 2);
 
 	obs_enter_graphics();
+	graphics_uses_d3d11 = gs_get_device_type() == GS_DEVICE_DIRECT3D_11;
+	obs_leave_graphics();
 
-	if (win8_or_above && gs_get_device_type() == GS_DEVICE_DIRECT3D_11)
+	if (graphics_uses_d3d11)
+		wgc_supported = win_version_compare(&ver, &win1903) >= 0;
+
+	if (win8_or_above && graphics_uses_d3d11)
 		obs_register_source(&duplicator_capture_info);
 	else
 		obs_register_source(&monitor_capture_info);
-
-	obs_leave_graphics();
 
 	obs_register_source(&window_capture_info);
 
 	char *config_path = obs_module_config_path(NULL);
 
+	init_hook_files();
 	init_hooks_thread =
 		CreateThread(NULL, 0, init_hooks, config_path, 0, NULL);
 	obs_register_source(&game_capture_info);
